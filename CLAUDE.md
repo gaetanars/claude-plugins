@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Marketplace + plugin Claude Code (`tdd-forge`, v0.1.0) : livraison autonome en TDD pour dépôts Python/TypeScript sur GitHub. Ce dépôt ne contient **pas** d'application : il n'y a ni build, ni lint, ni suite de tests. Le contenu est du Markdown (agents, skills), du JS (workflow), du Python (hooks + moteur) et des assets copiés dans les projets cibles. README.md (français) décrit le parcours, les rôles et les garde-fous ; le lire avant toute modification structurelle.
 
-Le dossier racine contient aussi les fichiers d'un dépôt git nu (`HEAD`, `objects/`, `hooks/`, `refs/`…) à côté de l'arbre de travail : ce sont des artefacts du dépôt, pas du code du plugin. Remote : `git@github.com:gaetanars/tdd-forge.git`, branche `main`. Langue du code, des prompts et des commits : français (messages au format `feat: …`).
+Remote : `git@github.com:gaetanars/tdd-forge.git`, branche `main`. Langue du code, des prompts et des commits : français (messages au format `feat: …`).
 
 ## Validation
 
