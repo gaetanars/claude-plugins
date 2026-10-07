@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "stack": "python",
+  "default_branch": "main",
+  "remote": "origin",
+  "test_globs": ["tests/*", "test_*.py", "*_test.py", "conftest.py"],
+  "acceptance_dir": "tests/acceptance",
+  "junit_path": ".forge/out/junit.xml",
+  "test_cmd": "uv run pytest -q -p no:cacheprovider --junitxml=.forge/out/junit.xml",
+  "gates": [
+    { "name": "format", "cmd": "uv run ruff format --check ." },
+    { "name": "lint", "cmd": "uv run ruff check ." },
+    { "name": "types", "cmd": "uv run pyright" },
+    { "name": "tests", "cmd": "uv run pytest -q -p no:cacheprovider --junitxml=.forge/out/junit.xml --cov --cov-fail-under=85", "tests": true }
+  ],
+  "suppression_markers": ["# type: ignore", "# noqa", "# pyright: ignore", "pragma: no cover"],
+  "max_pr_lines": 400,
+  "stall_rounds": 2,
+  "auto_merge": true,
+  "merge_method": "squash"
+}

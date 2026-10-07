@@ -1,0 +1,7 @@
+# tdd-forge
+.forge/worktrees/
+.forge/backlog/
+.forge/out/
+.forge/current
+.forge/metrics.jsonl
+.forge/guard.log

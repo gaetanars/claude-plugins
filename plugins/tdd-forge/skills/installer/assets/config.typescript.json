@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "stack": "typescript",
+  "default_branch": "main",
+  "remote": "origin",
+  "test_globs": ["*.test.ts", "*.test.tsx", "*.spec.ts", "*.spec.tsx", "tests/*", "__tests__/*"],
+  "acceptance_dir": "tests/acceptance",
+  "junit_path": ".forge/out/junit.xml",
+  "test_cmd": "npx vitest run --reporter=default --reporter=junit --outputFile.junit=.forge/out/junit.xml",
+  "gates": [
+    { "name": "biome", "cmd": "npx biome ci ." },
+    { "name": "types", "cmd": "npx tsc --noEmit" },
+    { "name": "tests", "cmd": "npx vitest run --coverage --reporter=default --reporter=junit --outputFile.junit=.forge/out/junit.xml", "tests": true }
+  ],
+  "suppression_markers": ["@ts-ignore", "@ts-expect-error", "eslint-disable", "biome-ignore", "as any", ": any"],
+  "max_pr_lines": 400,
+  "stall_rounds": 2,
+  "auto_merge": true,
+  "merge_method": "squash"
+}

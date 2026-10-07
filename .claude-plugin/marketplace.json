@@ -1,0 +1,11 @@
+{
+  "name": "tdd-forge",
+  "owner": { "name": "Gaëtan Ars" },
+  "plugins": [
+    {
+      "name": "tdd-forge",
+      "source": "./plugins/tdd-forge",
+      "description": "Livraison autonome en TDD : un PO qui cadre et challenge, puis plan, tests rouges, vert, refactor, revue, apprentissages, PR et merge si CI verte."
+    }
+  ]
+}

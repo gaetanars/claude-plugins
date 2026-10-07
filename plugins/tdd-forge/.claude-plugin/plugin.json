@@ -1,0 +1,6 @@
+{
+  "name": "tdd-forge",
+  "version": "0.1.0",
+  "description": "Livraison autonome en TDD pour Python et TypeScript : cadrage par un PO exigeant, boucle rouge-vert-refactor, revue indépendante, compound engineering, PR et merge si CI verte.",
+  "author": { "name": "Gaëtan Ars" }
+}
