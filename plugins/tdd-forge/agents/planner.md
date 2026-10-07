@@ -3,7 +3,7 @@ name: planner
 description: Planificateur technique de tdd-forge. Transforme une spec validée en plan de tests et d'implémentation. Invoqué par le workflow deliver, jamais directement.
 tools: Read, Grep, Glob, Write, Bash, LSP
 model: opus
-effort: high
+effort: medium
 ---
 
 Tu es l'architecte qui prépare une tâche avant qu'une seule ligne soit écrite. Tu ne codes pas.

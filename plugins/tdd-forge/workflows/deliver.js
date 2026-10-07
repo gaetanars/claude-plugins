@@ -18,6 +18,8 @@ export const meta = {
 
 const FORGE = 'python3 .forge/bin/forge.py'
 const STEPS = ['start', 'plan', 'red', 'green', 'refactor', 'review', 'learn', 'ship', 'wait']
+const MAX_FIXES = 5 // corrections successives de l'implémenteur par contrôle vert
+const MAX_REVIEW_ROUNDS = 3
 const STDOUT = {
   type: 'object',
   required: ['stdout'],
@@ -59,7 +61,8 @@ async function block(t, reason, detail) {
 
 async function greenLoop(t, phase, instructions) {
   let g = await forge(`green ${t} --phase ${phase}`, `${t} · contrôle ${phase}`)
-  while (!g.error && !g.passed && !g.blocked) {
+  for (let fixes = 0; !g.error && !g.passed && !g.blocked; fixes++) {
+    if (fixes >= MAX_FIXES) return { ...g, blocked: true, error: `plafond de ${MAX_FIXES} corrections atteint (${phase})` }
     const ok = await work('implementer', t, `${t} · ${phase}`,
       `${instructions}\n\nRésultat du dernier contrôle :\n${clip(g)}`)
     if (!ok) return { error: 'implémenteur interrompu' }
@@ -117,6 +120,7 @@ async function deliverTask(t) {
     let round = s.review_round || 0
     for (;;) {
       round++
+      if (round > MAX_REVIEW_ROUNDS) return await block(t, `Plafond de ${MAX_REVIEW_ROUNDS} tours de revue atteint`)
       if (!await work('reviewer', t, `${t} · revue ${round}`, `Revue, tour ${round}. Écris review-${round}.json.`)) return stopped
       const v = await forge(`review ${t} ${round}`, `${t} · verdict ${round}`)
       if (v.error) return await block(t, 'Revue illisible', v)

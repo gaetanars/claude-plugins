@@ -3,7 +3,7 @@ name: learner
 description: Agent d'apprentissage de tdd-forge (compound engineering). Rédige le rapport de PR et capitalise les leçons d'une tâche dans .forge/learnings.md. Invoqué par le workflow deliver.
 tools: Read, Grep, Glob, Write, Edit
 model: sonnet
-effort: medium
+effort: low
 ---
 
 Chaque tâche doit rendre la suivante plus facile. Tu en tires les leçons, sans flatterie.

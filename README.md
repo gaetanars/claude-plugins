@@ -2,6 +2,8 @@
 
 Livraison autonome en TDD avec Claude Code, pour des dépôts Python et TypeScript sur GitHub.
 
+> **Statut : v0.1, expérimental.** Le plugin n'a pas encore été exécuté de bout en bout ; la seule vérification outillée est `claude plugin validate`. Lis [« À vérifier au premier lancement »](#à-vérifier-au-premier-lancement) avant de l'utiliser sur un dépôt qui compte. Il pousse des branches, ouvre des PR et peut les fusionner : essaie-le d'abord sur un dépôt jetable.
+
 Tu ne parles qu'au Product Owner. Il cadre, challenge et découpe ; tu valides les critères d'acceptation. Ensuite, la boucle tourne seule : plan, tests rouges, vert, refactor, revue indépendante, apprentissages, PR, merge si la CI est verte.
 
 ## Le parcours
@@ -29,12 +31,12 @@ workflow tdd-forge:deliver        ← autonome, une tâche après l'autre
 | Élément | Modèle | Peut écrire | Rôle |
 |---|---|---|---|
 | skill `cadrer` | Opus | `PRODUCT.md`, specs | Product Owner, ton seul interlocuteur |
-| `planner` | Opus, effort high | `plan.md` | plan de tests et d'implémentation |
-| `test-writer` | Sonnet, high | fichiers de test (acceptation verrouillée après le rouge) | tests rouges, tests issus de la revue |
-| `implementer` | Sonnet, high | code applicatif uniquement | vert, refactor, corrections de revue |
-| `reviewer` | Opus, high | `review-n.json` | revue indépendante après les portes automatiques |
+| `planner` | Opus, medium | `plan.md` | plan de tests et d'implémentation |
+| `test-writer` | Sonnet, medium | fichiers de test (acceptation verrouillée après le rouge) | tests rouges, tests issus de la revue |
+| `implementer` | Sonnet, medium | code applicatif uniquement | vert, refactor, corrections de revue |
+| `reviewer` | Opus, medium | `review-n.json` | revue indépendante après les portes automatiques |
 | `runner` | Haiku, low, sans CLAUDE.md | rien | exécute `forge.py`, rien d'autre |
-| `learner` | Sonnet, medium | `report.md`, `.forge/learnings.md` | compound engineering |
+| `learner` | Sonnet, low | `report.md`, `.forge/learnings.md` | compound engineering |
 | `forge.py` | aucun (déterministe) | commits, push, PR, merge | moteur, état, journal, contrôles |
 
 ## Les garde-fous, par couche
@@ -50,13 +52,12 @@ workflow tdd-forge:deliver        ← autonome, une tâche après l'autre
 
 Prérequis : Claude Code 2.1.271 ou plus, `git`, `gh` authentifié, `python3` 3.9 ou plus, `uv` ou `node`.
 
-1. Pousse ce dossier dans un dépôt GitHub à toi, par exemple `gaetan/tdd-forge`.
-2. Dans Claude Code :
+1. Dans Claude Code :
    ```
-   /plugin marketplace add gaetan/tdd-forge
+   /plugin marketplace add gaetanars/tdd-forge
    /plugin install tdd-forge@tdd-forge
    ```
-3. Dans chaque projet : `/tdd-forge:installer`. Il configure les portes, copie `forge.py`, écrit la CI et les permissions, vérifie la ligne de base et propose la protection de `main`.
+2. Dans chaque projet : `/tdd-forge:installer`. Il configure les portes, copie `forge.py`, écrit la CI et les permissions, vérifie la ligne de base et propose la protection de `main`.
 
 Réglages conseillés dans ton `~/.claude/settings.json` : `"autoContinueAtUsageLimit": true`. Empêche la mise en veille pendant une livraison (macOS : `caffeinate -i` dans un terminal).
 
@@ -85,7 +86,7 @@ Les agents échangent exclusivement par ces fichiers. `state.json` et `journal.j
 
 ## Consommation
 
-Mesurée, sans plafond. Le hook `metrics.py` relève l'usage de chaque agent à sa sortie ; chaque PR affiche le total par agent ; la rétro repère les étapes qui dérivent. Leviers en place : runner sur Haiku sans CLAUDE.md, outils restreints par rôle, skills de conventions chargées à la demande, portes déterministes avant la revue, revue unique sur Opus.
+Mesurée, avec des plafonds de tours (pas de plafond de tokens). Le hook `metrics.py` relève l'usage de chaque agent à sa sortie ; chaque PR affiche le total par agent ; la rétro repère les étapes qui dérivent. Leviers en place : runner sur Haiku sans CLAUDE.md, outils restreints par rôle, skills de conventions chargées à la demande, portes déterministes avant la revue, revue unique sur Opus, effort medium par défaut (à relever par rôle si la rétro le justifie), plafonds de tours dans `deliver.js` (5 corrections vertes par phase, 3 tours de revue).
 
 ## À vérifier au premier lancement
 
@@ -99,6 +100,10 @@ Ces points reposent sur la documentation de Claude Code, pas sur une exécution 
 
 Fais une première livraison sur une tâche minuscule, en restant devant l'écran.
 
+## Contribuer
+
+Les issues et PR sont les bienvenues, en français (code, prompts, commits au format `feat: …`). Le dépôt ne contient ni build ni tests : valide avec `claude plugin validate plugins/tdd-forge`. Les points de cohérence à respecter (contrat JSON `forge.py` ⇄ `deliver.js`, périmètres de `guard.py` ⇄ `agents/*.md`) sont décrits dans `CLAUDE.md`.
+
 ## Limites de la v0.1
 
 - **GitHub uniquement.** GitLab (`glab`, MR, auto-merge) n'est pas encore codé dans `forge.py`.
@@ -106,3 +111,7 @@ Fais une première livraison sur une tâche minuscule, en restant devant l'écra
 - **Specs non versionnées** : `.forge/backlog/` reste local ; la PR conserve le rapport.
 - **Contournement par le shell** : un agent qui modifierait un test via Bash n'est pas bloqué au moment même, mais la modification est annulée au contrôle suivant.
 - **Relecteur de la même famille de modèles** que l'implémenteur : les portes déterministes et la CI restent le vrai filet.
+
+## Licence
+
+[MIT](LICENSE).
