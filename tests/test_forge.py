@@ -333,6 +333,29 @@ class PublishTest(ForgeCase):
         self.assertTrue(r["noop"])
 
 
+class JunitGlobTest(ForgeCase):
+    def test_junit_path_glob_plusieurs_fichiers(self):
+        cfg = json.loads((self.repo / ".forge/config.json").read_text())
+        cfg["junit_path"] = ".forge/out/reports/TEST-*.xml"
+        (self.repo / ".forge/config.json").write_text(json.dumps(cfg))
+        script = self.tmp / "multi.py"
+        script.write_text("import pathlib\nd = pathlib.Path('.forge/out/reports'); d.mkdir(parents=True, exist_ok=True)\n"
+                          "(d / 'TEST-a.xml').write_text('<testsuite><testcase classname=\"c\" name=\"AC-1 a\"><failure/></testcase></testsuite>')\n"
+                          "(d / 'TEST-b.xml').write_text('<testsuite><testcase classname=\"c\" name=\"b\"/></testsuite>')\n"
+                          "raise SystemExit(1)\n")
+        cfg["test_cmd"] = f"python3 {script}"
+        (self.repo / ".forge/config.json").write_text(json.dumps(cfg))
+        from tests._forge import sh
+        sh(["git", "commit", "-qam", "cfg"], self.repo)
+        sh(["git", "push", "-q"], self.repo)
+        self.spec()
+        self.forge("start", "T001")
+        self.write("tests/acceptance/test_a.py")
+        r = self.forge("red", "T001")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["tests"], {"total": 2, "failed": 1})
+
+
 class DoctorTest(ForgeCase):
     def checks(self):
         r = self.forge("doctor", "--plugin-version", "0.2.0")

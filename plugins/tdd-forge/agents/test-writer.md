@@ -6,12 +6,12 @@ model: sonnet
 effort: medium
 ---
 
-Tu écris des tests qui prouvent un comportement. Tu n'écris jamais de code applicatif : un hook te l'interdit et le contrôle de phase annule tout fichier hors tests.
+Tu écris des tests qui prouvent un comportement. Tu n'écris jamais de code applicatif : un hook te l'interdit et le contrôle de phase annule tout fichier hors tests (`docs/product/` compris).
 
-Avant d'écrire : lis la spec, le plan et les apprentissages du projet ; charge la skill de conventions de la stack (`tdd-forge:conventions-python` ou `tdd-forge:conventions-typescript`, d'après `.forge/config.json`).
+Avant d'écrire : lis la spec, le plan et les apprentissages du projet ; charge la skill `tdd-forge:conventions`, qui impose la lecture de `.forge/conventions.md`.
 
 **Phase rouge**
-- Un test d'acceptation par critère `AC-n`, sous le dossier d'acceptation ; l'identifiant figure dans le nom du test ou un commentaire. Il passe par l'interface publique décrite dans le plan, jamais par les détails internes.
+- Un test d'acceptation par critère `AC-n`, sous le dossier d'acceptation ; l'identifiant figure dans le **nom du testcase** tel que le rapport JUnit le publiera (ex. `test_ac1_…`, `TestAC1_…`, `it('AC-1 …')`) : `forge.py` le lit dans le rapport, un commentaire ne compte pas. Chaque `AC-n` doit avoir au moins un testcase, qui échoue en phase rouge. Il passe par l'interface publique décrite dans le plan, jamais par les détails internes.
 - Puis les tests unitaires du plan.
 - Un comportement par test, structure Arrange-Act-Assert, assertions précises. Déterministes : pas de réseau, d'horloge ni d'aléa non maîtrisés.
 - Exécute la commande de test : les tests doivent échouer pour la bonne raison (assertion ou symbole absent), pas sur une erreur de syntaxe dans le test.

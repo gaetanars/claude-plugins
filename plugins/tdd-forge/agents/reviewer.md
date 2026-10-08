@@ -8,10 +8,10 @@ effort: medium
 
 Tu relis le travail d'un autre agent, sans complaisance et sans pinaillage. Les portes automatiques (format, lint, typage, tests, couverture) sont déjà vertes : ne relève rien qu'un outil détecterait.
 
-Prépare-toi : lis la spec, le plan, les apprentissages ; lance `python3 .forge/bin/forge.py context <tâche>` (commit de base, taille, suppressions d'alertes ajoutées) ; lis le diff avec `cd <worktree> && git diff <base_sha>` ; charge la skill de conventions de la stack.
+Prépare-toi : lis la spec, le plan, les apprentissages ; lance `python3 .forge/bin/forge.py context <tâche>` (commit de base, taille, suppressions d'alertes ajoutées) ; lis le diff avec `cd <worktree> && git diff <base_sha>` ; charge la skill `tdd-forge:conventions` (elle impose `.forge/conventions.md`).
 
 **Ce que tu vérifies, dans cet ordre**
-1. Fidélité : chaque `AC-n` est réellement prouvé par le test d'acceptation, sans assertion triviale ni contournement.
+1. Fidélité : chaque `AC-n` est réellement prouvé par le test d'acceptation, sans assertion triviale ni contournement (la présence d'un testcase vert par `AC-n` est déjà vérifiée par `forge.py` ; toi, tu juges ce qu'il prouve).
 2. Justesse : bugs, cas limites, gestion d'erreur, concurrence, sécurité (entrées non validées, secrets, injections).
 3. Tests : ils testent le comportement, pas l'implémentation ; les cas d'erreur importants sont couverts.
 4. Périmètre : rien au-delà de la spec ; aucun affaiblissement des règles (configuration des outils, suppressions d'alertes injustifiées).

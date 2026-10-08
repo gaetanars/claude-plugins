@@ -8,6 +8,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - run: uv sync --locked
+      # setup : toolchain et dépendances de la stack, remplis par /tdd-forge:init (voir references/ecosystems.md)
+      # endsetup
       - run: python3 .forge/bin/forge.py gate

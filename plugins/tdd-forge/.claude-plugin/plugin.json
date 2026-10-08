@@ -1,10 +1,10 @@
 {
   "name": "tdd-forge",
-  "version": "0.1.1",
-  "description": "Livraison autonome en TDD pour Python et TypeScript : cadrage par un PO exigeant, boucle rouge-vert-refactor, revue indépendante, compound engineering, PR et merge si CI verte.",
+  "version": "0.2.0",
+  "description": "Livraison autonome en TDD, indépendante du langage (contrat de test JUnit) : PO exigeant avec accord figé, boucle rouge-vert-refactor, revue indépendante, connaissance produit versionnée, PR et merge si CI verte.",
   "author": { "name": "Gaëtan Ars" },
   "homepage": "https://github.com/gaetanars/claude-plugins/tree/main/plugins/tdd-forge",
   "repository": "https://github.com/gaetanars/claude-plugins",
   "license": "MIT",
-  "keywords": ["tdd", "workflow", "python", "typescript", "github"]
+  "keywords": ["tdd", "workflow", "multi-language", "junit", "github"]
 }
