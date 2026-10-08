@@ -1,11 +1,15 @@
 {
-  "name": "tdd-forge",
-  "owner": { "name": "Gaëtan Ars" },
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "gaetanars",
+  "description": "Plugins Claude Code de Gaëtan Ars : livraison autonome en TDD, outils DevOps.",
+  "owner": { "name": "Gaëtan Ars", "url": "https://github.com/gaetanars" },
   "plugins": [
     {
       "name": "tdd-forge",
       "source": "./plugins/tdd-forge",
-      "description": "Livraison autonome en TDD : un PO qui cadre et challenge, puis plan, tests rouges, vert, refactor, revue, apprentissages, PR et merge si CI verte."
+      "description": "Livraison autonome en TDD : un PO qui cadre et challenge, puis plan, tests rouges, vert, refactor, revue, apprentissages, PR et merge si CI verte.",
+      "category": "development",
+      "keywords": ["tdd", "workflow", "python", "typescript", "github"]
     }
   ]
 }
