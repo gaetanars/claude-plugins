@@ -4,17 +4,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Nature du dépôt
 
-Marketplace + plugin Claude Code (`tdd-forge`, v0.1.0) : livraison autonome en TDD pour dépôts Python/TypeScript sur GitHub. Ce dépôt ne contient **pas** d'application : il n'y a ni build, ni lint, ni suite de tests. Le contenu est du Markdown (agents, skills), du JS (workflow), du Python (hooks + moteur) et des assets copiés dans les projets cibles. README.md (français) décrit le parcours, les rôles et les garde-fous ; le lire avant toute modification structurelle.
+Marketplace Claude Code `gaetanars` (`.claude-plugin/marketplace.json`), un plugin par dossier sous `plugins/`. Plugin actuel : `tdd-forge`. README.md décrit installation, contribution et contrôles de CI.
 
-Remote : `git@github.com:gaetanars/tdd-forge.git`, branche `main`. Langue du code, des prompts et des commits : français (messages au format `feat: …`).
+Remote : `git@github.com:gaetanars/claude-plugins.git` (renommage depuis `tdd-forge` à faire côté GitHub), branche `main`. Langue du code, des prompts et des commits : français (messages au format `feat: …`).
+
+## Règles de marketplace
+
+- Version dans `plugins/<p>/.claude-plugin/plugin.json` uniquement (jamais dans l'entrée marketplace) ; **toute modification d'un plugin impose un bump semver** (contrôlé en CI sur les PR).
+- Pas de `CLAUDE.md` dans un dossier de plugin : ce fichier racine porte les consignes de tous les plugins.
+- Frontmatter des skills/agents en `clé: valeur` sur une ligne (le lecteur de `tests/_common.py` n'accepte rien d'autre).
 
 ## Validation
 
-- Seule vérification outillée : `claude plugin validate plugins/tdd-forge`.
+- `python3 -m unittest discover -s tests -t . -v` (un module par type d'élément ; `BASE_REF=origin/main` active le contrôle de bump). Même commande en CI (`.github/workflows/validate.yml`), qui ajoute `actionlint`.
+- `claude plugin validate --strict .` ne valide que la marketplace ; chaque plugin se valide séparément (`claude plugin validate --strict plugins/<p>`), ce que fait `tests/test_cli_validate.py`.
+
+## Plugin tdd-forge
+
+Livraison autonome en TDD pour dépôts Python/TypeScript sur GitHub. Le contenu est du Markdown (agents, skills), du JS (workflow), du Python (hooks + moteur) et des assets copiés dans les projets cibles. `plugins/tdd-forge/README.md` décrit le parcours, les rôles et les garde-fous ; le lire avant toute modification structurelle.
+
 - Pas d'exécution de bout en bout vérifiée (voir « À vérifier au premier lancement » dans README.md : options de `agent()`, format de `agent_type` reçu par les hooks, `SubagentStop`, règle de permission `Workflow(tdd-forge:deliver)`). Ne pas présenter ces points comme acquis.
 - `forge.py` : `python3 plugins/tdd-forge/skills/installer/assets/forge.py version` (sous-commandes : `status start red green tests-update review dispositions mark unblock context ship wait-merge version`).
 
-## Architecture (tout sous `plugins/tdd-forge/`)
+### Architecture (tout sous `plugins/tdd-forge/`)
 
 Le plugin est un pipeline à trois couches qui communiquent **uniquement par fichiers** (`.forge/backlog/<T>/` dans le projet cible : `spec.md`, `plan.md`, `review-n.json`, `state.json`, `journal.jsonl`) :
 
@@ -26,7 +38,7 @@ Garde-fous en profondeur : `scripts/guard.py` (hook PreToolUse, périmètre d'é
 
 Skills (`skills/`) : `cadrer` (PO, avec `templates/PRODUCT.md` et `spec.md`), `installer`, `ameliorer` (rétro), `conventions-python` / `conventions-typescript` (chargées à la demande).
 
-## Points de cohérence à respecter
+### Points de cohérence à respecter
 
 - Le contrat JSON de `forge.py` (clés `ok`, `passed`, `blocked`, `approved`, `next`, `pr`, `state`…) est consommé par `deliver.js` : toute modification d'un côté impose de relire l'autre.
 - Les périmètres d'écriture/commandes sont définis à deux endroits qui doivent rester alignés : `guard.py` (`ROLES`, `FORGE_READONLY`, `GIT_WRITE`) et les `tools`/instructions de chaque `agents/*.md`.
