@@ -10,7 +10,7 @@ from pathlib import Path
 from tests._common import ROOT
 
 PLUGIN = ROOT / "plugins" / "tdd-forge"
-FORGE = PLUGIN / "skills" / "installer" / "assets" / "forge.py"
+FORGE = PLUGIN / "skills" / "init" / "assets" / "forge.py"
 GUARD = PLUGIN / "scripts" / "guard.py"
 
 FAKE_TESTS = """\
@@ -90,13 +90,16 @@ class ForgeCase(unittest.TestCase):
         f.write_text(junit(*cases))
         self.env["FAKE_JUNIT"] = str(f)
 
-    def spec(self, task="T001", acs=("AC-1",), extra="", validated=True, deps=""):
+    def spec(self, task="T001", acs=("AC-1",), extra="", approve=True, deps=""):
         d = self.repo / ".forge" / "backlog" / task
         d.mkdir(parents=True, exist_ok=True)
         crit = "\n".join(f"- {a} — critère" for a in acs)
         (d / "spec.md").write_text(
-            f"---\nid: {task}\ntitle: Titre {task}\nvalidated: {str(validated).lower()}\n"
+            f"---\nid: {task}\ntitle: Titre {task}\n"
             f"depends_on: [{deps}]\n---\n\n## Critères d'acceptation\n\n{crit}\n{extra}")
+        if approve:
+            r = self.forge("approve", task)
+            self.assertTrue(r.get("ok"), r)
         return d
 
     def forge(self, *args, cwd=None):

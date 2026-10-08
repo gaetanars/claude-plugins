@@ -81,6 +81,22 @@ class GuardTest(unittest.TestCase):
         for sub in ("ship T001", "red T001", "unblock T001"):
             self.assertEqual(self.call("planner", "Bash", command=f"python3 .forge/bin/forge.py {sub}"), 2, sub)
 
+    def test_approve_et_publish_interdits_a_tous(self):
+        for role in ("planner", "implementer", "runner", "learner"):
+            for sub in ("approve T001", 'publish "m" PRODUCT.md'):
+                self.assertEqual(self.call(role, "Bash", command=f"python3 .forge/bin/forge.py {sub}"), 2, (role, sub))
+        self.assertEqual(self.call("planner", "Bash",
+                                   command="python3 .forge/bin/forge.py status T001 && python3 .forge/bin/forge.py approve T001"), 2)
+
+    def test_backlog_et_doctor_en_lecture(self):
+        for sub in ("backlog", "doctor"):
+            self.assertEqual(self.call("planner", "Bash", command=f"python3 .forge/bin/forge.py {sub}"), 0)
+
+    def test_docs_produit_hors_de_portee(self):
+        self.assertEqual(self.call("implementer", "Write", file_path=self.wt("docs/product/decisions.md")), 2)
+        self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("docs/product/specs/T001.md")), 2)
+        self.assertEqual(self.call("learner", "Write", file_path=self.wt("docs/product/decisions.md")), 2)
+
     def test_runner(self):
         self.assertEqual(self.call("runner", "Bash", command="python3 .forge/bin/forge.py ship T001"), 0)
         self.assertEqual(self.call("runner", "Bash", command="ls"), 2)

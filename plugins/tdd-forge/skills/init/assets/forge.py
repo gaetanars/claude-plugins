@@ -7,6 +7,7 @@ technique ({"error": ...}). Exception : `gate` sort en 1 si une porte échoue (C
 
 Seul ce script commite, pousse, ouvre et merge les PR. Les agents ne le font jamais.
 État durable par tâche : .forge/backlog/<T>/state.json + journal.jsonl (reprise sur erreur).
+Contrat de test universel : code de sortie + rapport JUnit XML, quel que soit le langage.
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 TAIL = 3000
 DISPO = {"corrigé": "corrigé", "corrige": "corrigé", "refusé": "refusé", "refuse": "refusé",
          "reporté": "reporté", "reporte": "reporté"}
@@ -88,7 +89,7 @@ class Ctx:
                 self.cfg = json.loads(c.read_text())
                 break
         else:
-            raise ForgeError("`.forge/config.json` introuvable : lance /tdd-forge:installer")
+            raise ForgeError("`.forge/config.json` introuvable : lance /tdd-forge:init")
 
     def state(self) -> dict:
         return read_json(self.td / "state.json", {})
@@ -119,7 +120,7 @@ def is_test(rel: str, cfg) -> bool:
 def is_protected(rel: str) -> bool:
     if rel == ".forge/learnings.md":
         return False
-    return rel.startswith((".forge/", ".github/", ".claude/"))
+    return rel.startswith((".forge/", ".github/", ".claude/", "docs/product/"))
 
 
 def changed_paths(wt: Path) -> list[str]:
@@ -170,26 +171,56 @@ def hash_tree(root: Path, rel_dir: str) -> dict:
             for f in sorted(files) if f and (root / f).is_file()}
 
 
+AC_RE = re.compile(r"(?<![A-Za-z])AC[-_ ]?(\d+)", re.I)
+
+
+def ac_ids(text: str) -> list[str]:
+    """Identifiants AC-n normalisés (AC-1, ac_1, AC 01 → AC-1), triés."""
+    return [f"AC-{n}" for n in sorted({int(m) for m in AC_RE.findall(text or "")})]
+
+
+def parse_spec(text: str):
+    meta = {}
+    if text.startswith("---"):
+        for line in text.split("---", 2)[1].splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                meta[k.strip()] = v.strip()
+    deps = re.findall(r"T\d+", meta.get("depends_on", ""))
+    return meta, ac_ids(text), deps
+
+
+def spec_hash(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def read_spec(ctx: Ctx):
     f = ctx.td / "spec.md"
     if not f.exists():
         raise ForgeError(f"spec introuvable : {f}")
-    text = f.read_text()
-    meta = {}
-    if text.startswith("---"):
-        head = text.split("---", 2)[1]
-        for line in head.splitlines():
-            if ":" in line:
-                k, v = line.split(":", 1)
-                meta[k.strip()] = v.strip()
-    acs = sorted(set(re.findall(r"\bAC-\d+\b", text)), key=lambda s: int(s[3:]))
-    deps = re.findall(r"T\d+", meta.get("depends_on", ""))
-    return meta, acs, deps
+    return parse_spec(f.read_text())
+
+
+def known_task(root: Path, remote: str, default: str, t: str) -> bool:
+    """Tâche connue : spec locale, ou spec livrée dans docs/product/specs (checkout ou branche par défaut)."""
+    rel = f"docs/product/specs/{t}.md"
+    return ((root / ".forge" / "backlog" / t / "spec.md").exists() or (root / rel).exists()
+            or run(["git", "cat-file", "-e", f"{remote}/{default}:{rel}"], root).returncode == 0)
+
+
+def delivered(ctx: Ctx, t: str) -> bool:
+    if Ctx(t).state().get("status") == "done":
+        return True
+    cfg = ctx.cfg
+    return run(["git", "cat-file", "-e", f"{cfg.get('remote', 'origin')}/{cfg.get('default_branch', 'main')}:"
+                f"docs/product/specs/{t}.md"], ctx.root).returncode == 0
 
 
 # ---------------------------------------------------------------- portes
 
-def junit_counts(wt: Path, cfg):
+def junit_cases(wt: Path, cfg):
+    """Cas de test du rapport JUnit : [{name, classname, failed}], ou None si absent/illisible.
+    Une erreur de collecte sans testcase est comptée dans `suite_errors`."""
     p = wt / cfg.get("junit_path", ".forge/out/junit.xml")
     if not p.exists():
         return None
@@ -197,15 +228,32 @@ def junit_counts(wt: Path, cfg):
         root = ET.parse(p).getroot()
     except ET.ParseError:
         return None
-    total = failed = 0
-    for tc in root.iter("testcase"):
-        total += 1
-        if any(ch.tag in ("failure", "error") for ch in tc):
-            failed += 1
-    if total == 0:  # erreur de collecte sans testcase
-        for ts in root.iter("testsuite"):
-            failed += int(ts.get("errors") or 0) + int(ts.get("failures") or 0)
-    return {"total": total, "failed": failed}
+    cases = [{"name": tc.get("name") or "", "classname": tc.get("classname") or "",
+              "failed": any(ch.tag in ("failure", "error") for ch in tc)} for tc in root.iter("testcase")]
+    errors = 0
+    if not cases:
+        errors = sum(int(ts.get("errors") or 0) + int(ts.get("failures") or 0) for ts in root.iter("testsuite"))
+    return {"cases": cases, "suite_errors": errors}
+
+
+def junit_counts(report):
+    if report is None:
+        return None
+    cases = report["cases"]
+    return {"total": len(cases), "failed": sum(c["failed"] for c in cases) or report["suite_errors"]}
+
+
+def ac_status(acs: list[str], report) -> dict:
+    """Pour chaque AC : nombre de testcases dont le nom ou la classe le porte, et combien échouent."""
+    per = {a: {"cases": 0, "failing": 0} for a in acs}
+    for c in (report or {"cases": []})["cases"]:
+        for a in set(ac_ids(c["name"]) + ac_ids(c["classname"])):
+            if a in per:
+                per[a]["cases"] += 1
+                per[a]["failing"] += c["failed"]
+    return {"no_case": [a for a in acs if per[a]["cases"] == 0],
+            "failing": [a for a in acs if per[a]["failing"] > 0],
+            "none_failing": [a for a in acs if per[a]["cases"] > 0 and per[a]["failing"] == 0]}
 
 
 def run_cmd(cmd: str, wt: Path, timeout: int):
@@ -227,8 +275,9 @@ def run_gates(wt: Path, cfg) -> dict:
         ok, out = run_cmd(g["cmd"], wt, g.get("timeout", 1500))
         steps.append({"name": g["name"], "ok": ok, "seconds": round(time.time() - t0, 1),
                       "output": "" if ok else tail(out)})
-    return {"passed": all(s["ok"] for s in steps), "steps": steps,
-            "tests": junit_counts(wt, cfg), "failed_steps": sum(not s["ok"] for s in steps)}
+    report = junit_cases(wt, cfg)
+    return {"passed": all(s["ok"] for s in steps), "steps": steps, "report": report,
+            "tests": junit_counts(report), "failed_steps": sum(not s["ok"] for s in steps)}
 
 
 def diff_info(ctx: Ctx, base: str) -> dict:
@@ -238,17 +287,17 @@ def diff_info(ctx: Ctx, base: str) -> dict:
     lines, sup = 0, []
     for row in git(["diff", "--numstat", base], wt).splitlines():
         a, d, path = row.split("\t", 2)
-        if not is_test(path, cfg) and a != "-":
+        if not is_test(path, cfg) and not is_protected(path) and a != "-":
             lines += int(a) + int(d)
     cur = None
     for line in git(["diff", "-U0", base], wt).splitlines():
         if line.startswith("+++ "):
             cur = line[6:] if line.startswith("+++ b/") else None
-        elif line.startswith("+") and cur and not is_test(cur, cfg) and any(m in line for m in markers):
+        elif line.startswith("+") and cur and not is_test(cur, cfg) and not is_protected(cur) and any(m in line for m in markers):
             sup.append(f"{cur}: {line[1:].strip()[:160]}")
     untracked = run(["git", "ls-files", "-o", "--exclude-standard", "-z"], wt).stdout.split("\0")
     for f in untracked:
-        if not f or is_test(f, cfg) or not (wt / f).is_file():
+        if not f or is_test(f, cfg) or is_protected(f) or not (wt / f).is_file():
             continue
         content = (wt / f).read_text(errors="ignore").splitlines()
         lines += len(content)
@@ -263,12 +312,14 @@ def cmd_status(ctx: Ctx) -> dict:
     st = ctx.state()
     base = {"task": ctx.task, "title": meta.get("title", ""), "review_round": st.get("review_round", 0),
             "pr": st.get("pr_url")}
-    if meta.get("validated", "").lower() != "true":
-        return {**base, "next": "invalid", "reason": "spec non validée par Gaëtan"}
+    if not st.get("approved_hash"):
+        return {**base, "next": "invalid", "reason": "spec non approuvée : `forge.py approve` après l'accord de Gaëtan"}
+    if spec_hash((ctx.td / "spec.md").read_text()) != st["approved_hash"]:
+        return {**base, "next": "invalid", "reason": "spec modifiée depuis son approbation : nouvelle tâche ou nouvel accord"}
     if not acs:
         return {**base, "next": "invalid", "reason": "aucun critère d'acceptation AC-n dans la spec"}
     for d in deps:
-        if Ctx(d).state().get("status") != "done":
+        if not delivered(ctx, d):
             return {**base, "next": "invalid", "reason": f"dépendance {d} non livrée"}
     s = st.get("status")
     if s in ("done", "blocked"):
@@ -294,6 +345,73 @@ def cmd_status(ctx: Ctx) -> dict:
     return {**base, "next": nxt, "reason": st.get("blocked_reason")}
 
 
+def cmd_approve(root_ctx: Ctx, tasks: list[str]) -> dict:
+    """Fige l'accord client/PO : empreinte sha256 de la spec, relue par `status` avant chaque tâche."""
+    cfg, plans = root_ctx.cfg, []
+    remote, default = cfg.get("remote", "origin"), cfg.get("default_branch", "main")
+    for t in tasks:
+        ctx = Ctx(t)
+        f = ctx.td / "spec.md"
+        if not f.exists():
+            raise ForgeError(f"{t} : spec introuvable ({f})")
+        text = f.read_text()
+        meta, acs, deps = parse_spec(text)
+        if meta.get("id") != t:
+            raise ForgeError(f"{t} : frontmatter `id` absent ou différent ({meta.get('id')!r})")
+        if not meta.get("title"):
+            raise ForgeError(f"{t} : frontmatter `title` absent")
+        if "depends_on" not in meta:
+            raise ForgeError(f"{t} : frontmatter `depends_on` absent (mettre [] sinon)")
+        if not acs:
+            raise ForgeError(f"{t} : aucun critère d'acceptation AC-n")
+        unknown = [d for d in deps if d not in tasks and not known_task(ctx.root, remote, default, d)]
+        if unknown:
+            raise ForgeError(f"{t} : dépendances inconnues : {', '.join(unknown)}")
+        if ctx.state().get("status") not in (None, "approved"):
+            raise ForgeError(f"{t} : déjà lancée ({ctx.state().get('status')}) ; un changement est une nouvelle tâche")
+        plans.append((ctx, text, acs))
+    for ctx, text, _ in plans:
+        st = ctx.state()
+        st.update(approved_hash=spec_hash(text), approved_at=now(), status=st.get("status") or "approved")
+        ctx.save(st)
+        ctx.log("approve", hash=st["approved_hash"])
+    return {"ok": True, "approved": {c.task: {"acs": a, "hash": c.state()["approved_hash"][:12]} for c, _, a in plans}}
+
+
+def cmd_backlog(ctx: Ctx) -> dict:
+    """Toutes les tâches connues : statut draft|approved|running|blocked|shipped|done."""
+    tasks, ids = [], set()
+    bdir = ctx.root / ".forge" / "backlog"
+    for d in sorted(bdir.glob("T*")) if bdir.exists() else []:
+        spec = d / "spec.md"
+        if not spec.exists():
+            continue
+        t = d.name
+        ids.add(t)
+        text = spec.read_text()
+        meta, acs, deps = parse_spec(text)
+        st = read_json(d / "state.json", {})
+        raw = st.get("status")
+        modified = bool(st.get("approved_hash")) and spec_hash(text) != st["approved_hash"]
+        if not st.get("approved_hash") or modified:
+            status = "draft"
+        elif raw in ("blocked", "done"):
+            status = raw
+        elif raw in ("shipped", "ci_failed", "ci_absent", "closed"):
+            status = "shipped"
+        elif raw == "running":
+            status = "running"
+        else:
+            status = "approved"
+        tasks.append({"id": t, "title": meta.get("title", ""), "status": status, "detail": raw,
+                      "depends_on": deps, "acs": acs, "pr": st.get("pr_url"),
+                      "reason": st.get("blocked_reason"), "spec_modified": modified})
+    delivered_specs = sorted(p.stem for p in (ctx.root / "docs" / "product" / "specs").glob("T*.md")) \
+        if (ctx.root / "docs" / "product" / "specs").exists() else []
+    used = [int(m.group(1)) for t in ids | set(delivered_specs) if (m := re.fullmatch(r"T(\d+)", t))]
+    return {"tasks": tasks, "delivered_specs": delivered_specs, "next_id": f"T{max(used, default=0) + 1:03d}"}
+
+
 def cmd_start(ctx: Ctx) -> dict:
     s = cmd_status(ctx)
     if s["next"] in ("invalid", "done", "blocked"):
@@ -314,6 +432,11 @@ def cmd_start(ctx: Ctx) -> dict:
             git(["worktree", "add", "-b", branch, str(ctx.wt), base_ref], root)
     base_sha = st.get("base_sha") or git(["merge-base", base_ref, branch], root)
     ensure_ignored(ctx.wt, ".forge/out")
+    spec_rel = f"docs/product/specs/{ctx.task}.md"
+    if not (ctx.wt / spec_rel).exists():
+        (ctx.wt / spec_rel).parent.mkdir(parents=True, exist_ok=True)
+        (ctx.wt / spec_rel).write_text((ctx.td / "spec.md").read_text())
+        commit(ctx.wt, f"docs({ctx.task}): spec")
     (root / ".forge" / "current").write_text(ctx.task)
     st.update(base_sha=base_sha, branch=branch, status="running", started=st.get("started") or now())
     ctx.save(st)
@@ -345,17 +468,21 @@ def cmd_red(ctx: Ctx) -> dict:
         problems.append(f"fichiers hors tests annulés : {', '.join(non_test)}")
     if not acc:
         problems.append(f"aucun test d'acceptation sous {acc_dir(cfg)}/")
-    text = "\n".join((wt / p).read_text(errors="ignore") for p in acc if (wt / p).is_file())
-    missing = [a for a in acs if a not in text]
-    if missing:
-        problems.append(f"critères sans test d'acceptation : {', '.join(missing)}")
     (wt / ".forge" / "out").mkdir(parents=True, exist_ok=True)
+    (wt / cfg.get("junit_path", ".forge/out/junit.xml")).unlink(missing_ok=True)
     ok, out = run_cmd(cfg["test_cmd"], wt, cfg.get("test_timeout", 1500))
-    counts = junit_counts(wt, cfg)
+    report = junit_cases(wt, cfg)
+    counts = junit_counts(report)
+    ac = ac_status(acs, report)
     if ok:
         problems.append("les tests passent déjà : ils ne prouvent rien, la phase rouge exige un échec")
     elif not counts or counts["failed"] == 0:
         problems.append("échec sans test en échec identifiable dans le rapport JUnit (outillage ?)")
+    else:
+        if ac["no_case"]:
+            problems.append(f"critères sans testcase (l'identifiant AC-n doit figurer dans le nom du test) : {', '.join(ac['no_case'])}")
+        if ac["none_failing"]:
+            problems.append(f"critères dont aucun test n'échoue : {', '.join(ac['none_failing'])}")
     if problems:
         sig = hashlib.sha256("|".join(problems).encode()).hexdigest()
         blocked = _stall(ctx, st, "stall_red", sig != st.get("red_sig"))
@@ -364,13 +491,14 @@ def cmd_red(ctx: Ctx) -> dict:
             _block(ctx, st, "phase rouge sans progrès")
         ctx.save(st)
         ctx.log("red_refused", problems=problems)
-        return {"ok": False, "problems": problems, "tests": counts, "output": tail(out), "blocked": blocked}
+        return {"ok": False, "problems": problems, "tests": counts, "output": tail(out), "blocked": blocked,
+                "ac_missing": ac["no_case"] + ac["none_failing"], "ac_failing": ac["failing"]}
     meta, _, _ = read_spec(ctx)
     sha = commit(wt, f"test({ctx.task}): phase rouge — {meta.get('title', '')}")
     st.update(red_sha=sha, tests_baseline=sha, acceptance_hash=hash_tree(wt, acc_dir(cfg)), stall_red=0)
     ctx.save(st)
     ctx.log("red", sha=sha, failing=counts)
-    return {"ok": True, "red_sha": sha, "tests": counts}
+    return {"ok": True, "red_sha": sha, "tests": counts, "ac_failing": ac["failing"]}
 
 
 def cmd_green(ctx: Ctx, phase: str) -> dict:
@@ -385,6 +513,13 @@ def cmd_green(ctx: Ctx, phase: str) -> dict:
     g = run_gates(wt, cfg)
     info = diff_info(ctx, st["base_sha"])
     failed_tests = g["tests"]["failed"] if g["tests"] else None
+    _, acs, _ = read_spec(ctx)
+    ac = ac_status(acs, g["report"])
+    if g["passed"]:
+        if ac["no_case"]:
+            violations.append(f"critères sans testcase dans le rapport JUnit : {', '.join(ac['no_case'])}")
+        if ac["failing"]:
+            violations.append(f"critères avec un test en échec : {', '.join(ac['failing'])}")
     if g["passed"] and not violations:
         if dirty(wt):
             prefix = {"impl": "feat", "refactor": "refactor", "review": "fix"}[phase]
@@ -409,7 +544,8 @@ def cmd_green(ctx: Ctx, phase: str) -> dict:
     ctx.save(st)
     ctx.log("not_green", phase=phase, **cur, violations=violations)
     return {"passed": False, "blocked": blocked, "violations": violations, "tests": g["tests"],
-            "failed": [s for s in g["steps"] if not s["ok"]], **info}
+            "failed": [s for s in g["steps"] if not s["ok"]], "ac_missing": ac["no_case"],
+            "ac_failing": ac["failing"], **info}
 
 
 def cmd_tests_update(ctx: Ctx) -> dict:
@@ -671,10 +807,95 @@ def cmd_wait_merge(ctx: Ctx, max_seconds: int) -> dict:
         time.sleep(30)
 
 
+PUBLISHABLE = ("PRODUCT.md", "docs/product/", ".forge/conventions.md", ".forge/learnings.md", ".forge/config.json")
+
+
+def cmd_publish(ctx: Ctx, message: str, paths: list[str], manual: bool) -> dict:
+    """Publie des fichiers du checkout principal (vision, décisions, conventions…) par une PR issue de la
+    branche par défaut, sans toucher à la branche courante. Merge auto si CI verte, sauf --manual."""
+    cfg, root = ctx.cfg, ctx.root
+    remote, default = cfg.get("remote", "origin"), cfg.get("default_branch", "main")
+    files = []
+    for p in paths:
+        rel = os.path.normpath(p).replace(os.sep, "/")
+        if rel.startswith(("..", "/")) or not any(
+                rel == a or (a.endswith("/") and (rel + "/").startswith(a)) for a in PUBLISHABLE):
+            raise ForgeError(f"{p} : chemin non publiable (autorisés : {', '.join(PUBLISHABLE)})")
+        src = root / rel
+        if src.is_dir():
+            files += [str(f.relative_to(root)) for f in sorted(src.rglob("*")) if f.is_file()]
+        elif src.is_file():
+            files.append(rel)
+        else:
+            raise ForgeError(f"{p} : introuvable dans le checkout principal")
+    if not files:
+        raise ForgeError("aucun fichier à publier")
+    if _gh(["auth", "status"], root).returncode != 0:
+        raise ForgeError("gh non authentifié : lance `gh auth login`")
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    branch, wt = f"product/{stamp}", root / ".forge" / "worktrees" / f"_publish-{stamp}"
+    ensure_ignored(root, ".forge/worktrees")
+    git(["fetch", remote, default], root)
+    git(["worktree", "add", "-b", branch, str(wt), f"{remote}/{default}"], root)
+    try:
+        for f in files:
+            (wt / f).parent.mkdir(parents=True, exist_ok=True)
+            (wt / f).write_bytes((root / f).read_bytes())
+        git(["add", "--", *files], wt)
+        if run(["git", "diff", "--cached", "--quiet"], wt).returncode == 0:
+            return {"ok": True, "noop": True, "reason": f"déjà identique à {remote}/{default}"}
+        git(["commit", "-m", message], wt)
+        git(["push", "-u", remote, branch], wt)
+        body = "Connaissance produit publiée par tdd-forge :\n\n" + "\n".join(f"- `{f}`" for f in files)
+        p = _gh(["pr", "create", "--base", default, "--head", branch, "--title", message, "--body", body], wt)
+        if p.returncode != 0:
+            raise ForgeError(f"création de PR impossible : {p.stderr.strip()[-800:]}")
+        url = p.stdout.strip().splitlines()[-1]
+        merge = "manual"
+        if not manual:
+            m = _gh(["pr", "merge", url, "--auto", f"--{cfg.get('merge_method', 'squash')}", "--delete-branch"], wt)
+            merge = "github" if m.returncode == 0 else "manual"
+        # le contenu est dans la PR : on remet le checkout principal à l'état de HEAD pour que le pull ne conflicte pas
+        restore(root, [f for f in files if f in changed_paths(root)])
+        return {"ok": True, "pr": url, "merge": merge, "files": files}
+    finally:
+        run(["git", "worktree", "remove", "--force", str(wt)], root)
+        run(["git", "branch", "-D", branch], root)
+
+
+def cmd_doctor(ctx: Ctx, plugin_version: str | None) -> dict:
+    """Contrôle déterministe d'une config écrite par un LLM, quel que soit le langage."""
+    cfg, root, checks = ctx.cfg, ctx.root, []
+
+    def check(name, ok, detail=""):
+        checks.append({"name": name, "ok": bool(ok), "detail": detail})
+
+    missing = [k for k in ("test_cmd", "gates", "acceptance_dir", "test_globs") if not cfg.get(k)]
+    check("config", not missing, f"clés manquantes : {', '.join(missing)}" if missing else "clés requises présentes")
+    if "test_cmd" in cfg:
+        (root / ".forge" / "out").mkdir(parents=True, exist_ok=True)
+        (root / cfg.get("junit_path", ".forge/out/junit.xml")).unlink(missing_ok=True)
+        ok, out = run_cmd(cfg["test_cmd"], root, cfg.get("test_timeout", 1500))
+        rep = junit_cases(root, cfg)
+        n = len(rep["cases"]) if rep else 0
+        check("junit", n >= 1, f"{n} testcase(s) dans {cfg.get('junit_path', '.forge/out/junit.xml')}"
+              if n else f"aucun rapport JUnit exploitable (code de sortie {'0' if ok else '≠0'}) : {tail(out, 600)}")
+        if not any(g.get("tests") for g in cfg.get("gates", [])):
+            check("gates", False, "aucune porte marquée `\"tests\": true` : la traçabilité AC-n n'a pas de rapport")
+    url = run(["git", "remote", "get-url", cfg.get("remote", "origin")], root)
+    check("remote", url.returncode == 0 and "github.com" in url.stdout, url.stdout.strip() or "remote absent")
+    check("gh", _gh(["auth", "status"], root).returncode == 0, "gh authentifié")
+    if plugin_version:
+        check("version", plugin_version == VERSION, f"moteur {VERSION}, plugin {plugin_version}"
+              + ("" if plugin_version == VERSION else " : relance /tdd-forge:init pour mettre à jour"))
+    return {"ok": all(c["ok"] for c in checks), "checks": checks}
+
+
 def cmd_gate() -> int:
     top = Path(git(["rev-parse", "--show-toplevel"], Path.cwd()))
     cfg = json.loads((top / ".forge" / "config.json").read_text())
     g = run_gates(top, cfg)
+    g.pop("report", None)
     emit(g)
     return 0 if g["passed"] else 1
 
@@ -702,6 +923,15 @@ def main() -> int:
     p = sub.add_parser("wait-merge")
     p.add_argument("task")
     p.add_argument("--max-seconds", type=int, default=1500)
+    p = sub.add_parser("approve")
+    p.add_argument("tasks", nargs="+")
+    p = sub.add_parser("publish")
+    p.add_argument("message")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--manual", action="store_true", help="PR laissée ouverte, sans merge automatique")
+    p = sub.add_parser("doctor")
+    p.add_argument("--plugin-version")
+    sub.add_parser("backlog")
     sub.add_parser("gate")
     sub.add_parser("version")
     a = ap.parse_args()
@@ -710,6 +940,12 @@ def main() -> int:
             return cmd_gate()
         if a.cmd == "version":
             emit({"version": VERSION})
+            return 0
+        if a.cmd in ("approve", "publish", "doctor", "backlog"):
+            ctx = Ctx()
+            emit({"approve": lambda: cmd_approve(ctx, a.tasks), "backlog": lambda: cmd_backlog(ctx),
+                  "publish": lambda: cmd_publish(ctx, a.message, a.paths, a.manual),
+                  "doctor": lambda: cmd_doctor(ctx, a.plugin_version)}[a.cmd]())
             return 0
         ctx = Ctx(a.task)
         res = {

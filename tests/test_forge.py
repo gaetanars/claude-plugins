@@ -5,16 +5,22 @@ from tests._forge import ForgeCase, junit
 
 
 class StatusTest(ForgeCase):
-    def test_spec_non_validee(self):
-        self.spec(validated=False)
+    def test_spec_non_approuvee(self):
+        self.spec(approve=False)
         s = self.forge("status", "T001")
         self.assertEqual(s["next"], "invalid")
+        self.assertIn("non approuvée", s["reason"])
 
-    def test_sans_ac(self):
-        self.spec(acs=())
-        self.assertEqual(self.forge("status", "T001")["next"], "invalid")
+    def test_spec_modifiee_apres_approbation(self):
+        d = self.spec()
+        (d / "spec.md").write_text((d / "spec.md").read_text() + "\n- AC-2 — ajout en douce\n")
+        s = self.forge("status", "T001")
+        self.assertEqual(s["next"], "invalid")
+        self.assertIn("modifiée", s["reason"])
+        self.assertFalse(self.forge("start", "T001")["ok"])
 
     def test_dependance_non_livree(self):
+        self.spec("T001", approve=False)
         self.spec("T002", deps="T001")
         s = self.forge("status", "T002")
         self.assertEqual(s["next"], "invalid")
@@ -39,9 +45,66 @@ class StartTest(ForgeCase):
         self.assertEqual((self.repo / ".forge" / "current").read_text(), "T001")
         self.assertEqual(self.forge("status", "T001")["next"], "plan")
 
-    def test_start_refuse_spec_invalide(self):
-        self.spec(validated=False)
+    def test_start_refuse_spec_non_approuvee(self):
+        self.spec(approve=False)
         self.assertFalse(self.forge("start", "T001")["ok"])
+
+    def test_start_commite_la_spec_figee(self):
+        d = self.spec()
+        self.forge("start", "T001")
+        f = self.wt() / "docs/product/specs/T001.md"
+        self.assertEqual(f.read_text(), (d / "spec.md").read_text())
+        from tests._forge import sh
+        self.assertIn("docs(T001): spec", sh(["git", "log", "--oneline"], self.wt()).stdout)
+        self.assertEqual(sh(["git", "status", "--porcelain"], self.wt()).stdout, "")
+
+
+class ApproveTest(ForgeCase):
+    def bad(self, text, task="T001"):
+        d = self.repo / ".forge/backlog" / task
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "spec.md").write_text(text)
+        return self.forge("approve", task)
+
+    def test_approuve_et_enregistre_l_empreinte(self):
+        self.spec()
+        st = json.loads((self.repo / ".forge/backlog/T001/state.json").read_text())
+        self.assertEqual(len(st["approved_hash"]), 64)
+        self.assertEqual(self.forge("status", "T001")["next"], "start")
+
+    def test_refus(self):
+        self.assertIn("id", self.bad("---\ntitle: x\ndepends_on: []\n---\nAC-1")["error"])
+        self.assertIn("title", self.bad("---\nid: T001\ndepends_on: []\n---\nAC-1")["error"])
+        self.assertIn("AC", self.bad("---\nid: T001\ntitle: x\ndepends_on: []\n---\nrien")["error"])
+        self.assertIn("T009", self.bad("---\nid: T001\ntitle: x\ndepends_on: [T009]\n---\nAC-1")["error"])
+
+    def test_dependance_dans_le_meme_lot(self):
+        for t, deps in (("T001", ""), ("T002", "T001")):
+            self.spec(t, approve=False, deps=deps)
+        self.assertTrue(self.forge("approve", "T001", "T002")["ok"])
+
+    def test_pas_de_reapprobation_apres_lancement(self):
+        self.spec()
+        self.forge("start", "T001")
+        self.assertIn("error", self.forge("approve", "T001"))
+
+
+class BacklogTest(ForgeCase):
+    def test_statuts_et_numerotation(self):
+        self.spec("T001")
+        self.spec("T002", approve=False)
+        self.spec("T003")
+        self.forge("start", "T003")
+        b = self.forge("backlog")
+        st = {t["id"]: t["status"] for t in b["tasks"]}
+        self.assertEqual(st, {"T001": "approved", "T002": "draft", "T003": "running"})
+        self.assertEqual(b["next_id"], "T004")
+
+    def test_spec_modifiee_redevient_draft(self):
+        d = self.spec()
+        (d / "spec.md").write_text((d / "spec.md").read_text() + "x")
+        t = self.forge("backlog")["tasks"][0]
+        self.assertEqual((t["status"], t["spec_modified"]), ("draft", True))
 
 
 class RedTest(ForgeCase):
@@ -85,6 +148,37 @@ class RedTest(ForgeCase):
         r = self.forge("red", "T001")
         self.assertTrue(any("AC-1" in p for p in r["problems"]))
 
+    def test_ac_sans_testcase_nomme(self):
+        self.write("tests/acceptance/test_a.py", "# AC-1 dans le fichier seulement\n")
+        self.set_junit(("test_quelque_chose", True))
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["ac_missing"], ["AC-1"])
+        self.assertTrue(any("AC-1" in p for p in r["problems"]))
+
+    def test_ac_identifiants_normalises(self):
+        for name in ("test_AC_01_x", "AC-1 comportement", "ac1"):
+            self.set_junit((name, True))
+            self.write("tests/acceptance/test_a.py", f"# {name}\n")
+            self.assertTrue(self.forge("red", "T001")["ok"], name)
+            self.forge("unblock", "T001")
+            from tests._forge import sh
+            sh(["git", "reset", "-q", "--hard", "HEAD~1"], self.wt())
+            st = self.repo / ".forge/backlog/T001/state.json"
+            d = json.loads(st.read_text())
+            d.pop("red_sha")
+            st.write_text(json.dumps(d))
+
+    def test_ac_dont_aucun_test_n_echoue(self):
+        d = self.repo / ".forge/backlog/T001/spec.md"
+        d.write_text(d.read_text() + "- AC-2 — autre\n")
+        self.forge("approve", "T001")
+        self.write("tests/acceptance/test_a.py", "# AC-1 AC-2\n")
+        self.set_junit(("test_ac_1", True), ("test_ac_2", False))
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["ac_missing"], ["AC-2"])
+
     def test_absence_de_progres_bloque(self):
         self.write("tests/acceptance/test_a.py", "# AC-1\n")
         self.set_junit(("test_ac_1", False))
@@ -107,6 +201,12 @@ class GreenTest(ForgeCase):
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertTrue(r["passed"], r)
         self.assertEqual(self.forge("status", "T001")["next"], "refactor")
+
+    def test_ac_sans_testcase_au_vert(self):
+        self.set_junit(("test_autre", False))
+        r = self.forge("green", "T001", "--phase", "impl")
+        self.assertFalse(r["passed"])
+        self.assertEqual(r["ac_missing"], ["AC-1"])
 
     def test_rouge_encore(self):
         self.set_junit(("test_ac_1", True))
@@ -196,6 +296,62 @@ class ReviewTest(ForgeCase):
         self.review(1, [self.item("R1-1")])
         (self.td / "dispositions-1-code.json").write_text(json.dumps([{"id": "R1-1", "status": "refusé"}]))
         self.assertEqual(self.forge("dispositions", "T001", 1)["invalid"]["code"], ["R1-1"])
+
+
+class PublishTest(ForgeCase):
+    def test_publie_sans_toucher_la_branche_courante(self):
+        from tests._forge import sh
+        (self.repo / "PRODUCT.md").write_text("# Produit\n")
+        (self.repo / "docs/product").mkdir(parents=True)
+        (self.repo / "docs/product/decisions.md").write_text("- décision\n")
+        r = self.forge("publish", "docs: vision", "PRODUCT.md", "docs/product")
+        self.assertTrue(r.get("ok"), r)
+        self.assertEqual(r["merge"], "github")
+        self.assertIn("pr merge", self.ghlog.read_text())
+        branches = sh(["git", "branch", "--list", "product/*"], self.origin).stdout
+        self.assertTrue(branches.strip())
+        shown = sh(["git", "show", f"{branches.split()[-1]}:docs/product/decisions.md"], self.origin).stdout
+        self.assertEqual(shown, "- décision\n")
+        # checkout principal remis à HEAD, plus de worktree ni de branche locale temporaires
+        self.assertEqual(sh(["git", "status", "--porcelain"], self.repo).stdout, "")
+        self.assertFalse((self.repo / "PRODUCT.md").exists())
+        self.assertEqual(sh(["git", "branch", "--list", "product/*"], self.repo).stdout, "")
+
+    def test_manual_ne_merge_pas(self):
+        (self.repo / ".forge/conventions.md").write_text("# c\n")
+        r = self.forge("publish", "chore: conventions", ".forge/conventions.md", "--manual")
+        self.assertEqual(r["merge"], "manual")
+        self.assertNotIn("pr merge", self.ghlog.read_text())
+
+    def test_chemin_non_publiable(self):
+        (self.repo / "src.py").write_text("x")
+        self.assertIn("error", self.forge("publish", "m", "src.py"))
+        self.assertIn("error", self.forge("publish", "m", "../x"))
+
+    def test_rien_a_publier(self):
+        r = self.forge("publish", "m", ".forge/config.json")
+        self.assertTrue(r["noop"])
+
+
+class DoctorTest(ForgeCase):
+    def checks(self):
+        r = self.forge("doctor", "--plugin-version", "0.2.0")
+        return r, {c["name"]: c["ok"] for c in r["checks"]}
+
+    def test_remote_github_requis(self):
+        self.set_junit(("t", False))
+        r, c = self.checks()
+        self.assertTrue(c["junit"] and c["config"] and c["gh"] and c["version"])
+        self.assertFalse(c["remote"])  # remote local de test
+        self.assertFalse(r["ok"])
+
+    def test_junit_vide(self):
+        self.set_junit()
+        self.assertFalse(self.checks()[1]["junit"])
+
+    def test_version_differente(self):
+        r = self.forge("doctor", "--plugin-version", "9.9.9")
+        self.assertFalse({c["name"]: c["ok"] for c in r["checks"]}["version"])
 
 
 class ShipTest(ForgeCase):
