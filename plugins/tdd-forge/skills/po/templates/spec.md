@@ -1,7 +1,6 @@
 ---
 id: T001
 title: Titre court, orienté résultat
-validated: false
 depends_on: []
 ---
 

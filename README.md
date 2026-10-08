@@ -6,7 +6,7 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 | Plugin | Version | Description |
 |---|---|---|
-| [`tdd-forge`](plugins/tdd-forge/README.md) | 0.1.1 | Livraison autonome en TDD (Python, TypeScript, GitHub) : PO, plan, tests rouges, vert, refactor, revue, PR et merge si CI verte. Expérimental. |
+| [`tdd-forge`](plugins/tdd-forge/README.md) | 0.2.0 | Livraison autonome en TDD multi-langage (GitHub) : PO, plan, tests rouges, vert, refactor, revue, PR et merge si CI verte. Expérimental. |
 
 ## Installation
 

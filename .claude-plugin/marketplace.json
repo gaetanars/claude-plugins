@@ -9,7 +9,7 @@
       "source": "./plugins/tdd-forge",
       "description": "Livraison autonome en TDD : un PO qui cadre et challenge, puis plan, tests rouges, vert, refactor, revue, apprentissages, PR et merge si CI verte.",
       "category": "development",
-      "keywords": ["tdd", "workflow", "python", "typescript", "github"]
+      "keywords": ["tdd", "workflow", "multi-language", "github"]
     }
   ]
 }

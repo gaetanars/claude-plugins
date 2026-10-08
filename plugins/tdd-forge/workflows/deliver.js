@@ -1,6 +1,6 @@
 export const meta = {
   name: 'deliver',
-  description: 'Livre en autonomie et en TDD les tâches cadrées et validées par le PO : plan, tests rouges, vert, refactor, revue, apprentissages, PR, merge si CI verte. Argument : { tasks: ["T001", ...] }.',
+  description: 'Livre en autonomie et en TDD les tâches cadrées par le PO et approuvées (forge.py approve) : plan, tests rouges, vert, refactor, revue, apprentissages, PR, merge si CI verte. Argument : { tasks: ["T001", ...] }.',
   phases: [
     { title: 'Préparation' },
     { title: 'Plan' },
@@ -29,7 +29,7 @@ const STDOUT = {
 const header = (t) => [
   `Tâche ${t}.`,
   `Worktree : .forge/worktrees/${t}. Toute commande shell s'exécute en un seul appel : cd .forge/worktrees/${t} && <commande>.`,
-  `Dossier de tâche : .forge/backlog/${t} (spec.md, plan.md, revues, dispositions).`,
+  `Dossier de tâche : .forge/backlog/${t} (spec.md approuvée et figée, plan.md, revues, dispositions).`,
   `Apprentissages du projet : .forge/worktrees/${t}/.forge/learnings.md.`,
 ].join('\n')
 
@@ -91,7 +91,7 @@ async function deliverTask(t) {
 
   if (todo('red')) {
     phase('Rouge')
-    let instr = 'Phase rouge : écris le test d\'acceptation (un test par AC-n) puis les tests unitaires du plan. Ils doivent échouer pour la bonne raison.'
+    let instr = 'Phase rouge : écris le test d\'acceptation (un testcase par AC-n, dont le NOM porte l\'identifiant AC-n) puis les tests unitaires du plan. Ils doivent échouer pour la bonne raison.'
     for (;;) {
       if (!await work('test-writer', t, `${t} · tests rouges`, instr)) return stopped
       const r = await forge(`red ${t}`, `${t} · contrôle rouge`)
@@ -104,7 +104,7 @@ async function deliverTask(t) {
 
   if (todo('green')) {
     phase('Vert')
-    const g = await greenLoop(t, 'impl', 'Phase verte : écris le code minimal qui fait passer tous les tests et les portes.')
+    const g = await greenLoop(t, 'impl', 'Phase verte : écris le code minimal qui fait passer tous les tests et les portes. Chaque AC-n doit avoir un testcase au vert dans le rapport JUnit.')
     if (!g.passed) return await block(t, g.error || 'Implémentation sans progrès', g)
   }
 

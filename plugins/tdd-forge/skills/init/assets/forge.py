@@ -218,21 +218,33 @@ def delivered(ctx: Ctx, t: str) -> bool:
 
 # ---------------------------------------------------------------- portes
 
+def junit_files(wt: Path, cfg) -> list[Path]:
+    """`junit_path` peut être un glob (surefire, gradle écrivent un fichier par classe)."""
+    return sorted(wt.glob(cfg.get("junit_path", ".forge/out/junit.xml")))
+
+
+def clear_junit(wt: Path, cfg) -> None:
+    for f in junit_files(wt, cfg):
+        f.unlink()
+
+
 def junit_cases(wt: Path, cfg):
     """Cas de test du rapport JUnit : [{name, classname, failed}], ou None si absent/illisible.
     Une erreur de collecte sans testcase est comptée dans `suite_errors`."""
-    p = wt / cfg.get("junit_path", ".forge/out/junit.xml")
-    if not p.exists():
+    files = junit_files(wt, cfg)
+    if not files:
         return None
-    try:
-        root = ET.parse(p).getroot()
-    except ET.ParseError:
-        return None
-    cases = [{"name": tc.get("name") or "", "classname": tc.get("classname") or "",
-              "failed": any(ch.tag in ("failure", "error") for ch in tc)} for tc in root.iter("testcase")]
-    errors = 0
-    if not cases:
-        errors = sum(int(ts.get("errors") or 0) + int(ts.get("failures") or 0) for ts in root.iter("testsuite"))
+    cases, errors = [], 0
+    for p in files:
+        try:
+            root = ET.parse(p).getroot()
+        except ET.ParseError:
+            return None
+        cases += [{"name": tc.get("name") or "", "classname": tc.get("classname") or "",
+                   "failed": any(ch.tag in ("failure", "error") for ch in tc)} for tc in root.iter("testcase")]
+        errors += sum(int(ts.get("errors") or 0) + int(ts.get("failures") or 0) for ts in root.iter("testsuite"))
+    if cases:
+        errors = 0  # les erreurs de collecte ne comptent que sans aucun testcase
     return {"cases": cases, "suite_errors": errors}
 
 
@@ -266,11 +278,10 @@ def run_cmd(cmd: str, wt: Path, timeout: int):
 
 def run_gates(wt: Path, cfg) -> dict:
     (wt / ".forge" / "out").mkdir(parents=True, exist_ok=True)
-    junit = wt / cfg.get("junit_path", ".forge/out/junit.xml")
     steps = []
     for g in cfg["gates"]:
-        if g.get("tests") and junit.exists():
-            junit.unlink()
+        if g.get("tests"):
+            clear_junit(wt, cfg)
         t0 = time.time()
         ok, out = run_cmd(g["cmd"], wt, g.get("timeout", 1500))
         steps.append({"name": g["name"], "ok": ok, "seconds": round(time.time() - t0, 1),
@@ -469,7 +480,7 @@ def cmd_red(ctx: Ctx) -> dict:
     if not acc:
         problems.append(f"aucun test d'acceptation sous {acc_dir(cfg)}/")
     (wt / ".forge" / "out").mkdir(parents=True, exist_ok=True)
-    (wt / cfg.get("junit_path", ".forge/out/junit.xml")).unlink(missing_ok=True)
+    clear_junit(wt, cfg)
     ok, out = run_cmd(cfg["test_cmd"], wt, cfg.get("test_timeout", 1500))
     report = junit_cases(wt, cfg)
     counts = junit_counts(report)
@@ -874,7 +885,7 @@ def cmd_doctor(ctx: Ctx, plugin_version: str | None) -> dict:
     check("config", not missing, f"clés manquantes : {', '.join(missing)}" if missing else "clés requises présentes")
     if "test_cmd" in cfg:
         (root / ".forge" / "out").mkdir(parents=True, exist_ok=True)
-        (root / cfg.get("junit_path", ".forge/out/junit.xml")).unlink(missing_ok=True)
+        clear_junit(root, cfg)
         ok, out = run_cmd(cfg["test_cmd"], root, cfg.get("test_timeout", 1500))
         rep = junit_cases(root, cfg)
         n = len(rep["cases"]) if rep else 0
