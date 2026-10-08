@@ -16,9 +16,14 @@ ROLES = {"planner", "test-writer", "implementer", "reviewer", "runner", "learner
 GIT_WRITE = re.compile(r"\bgit\s+(push|commit|reset|rebase|checkout|switch|merge|cherry-pick|tag|branch|"
                        r"worktree|clean|restore|stash|am|apply|revert)\b")
 FORGE = re.compile(r"python3\s+\.forge/bin/forge\.py\s+(\S+)")
-FORGE_READONLY = {"status", "context", "metrics", "version", "backlog", "doctor"}
+FORGE_READONLY = {"status", "context", "metrics", "version", "backlog", "doctor", "plan-check"}
 FORGE_PO_ONLY = {"approve", "publish"}  # accord client et publication : jamais un sous-agent, runner compris
-PRODUCT_DOCS = "docs/product/"
+KNOWLEDGE_FILES = ("PRODUCT.md", "ARCHITECTURE.md")  # écrits par le PO / l'architecte, jamais par la livraison
+KNOWLEDGE_DIRS = ("docs/product/", "docs/architecture/")
+
+
+def is_knowledge(rel: str) -> bool:
+    return rel in KNOWLEDGE_FILES or rel.startswith(KNOWLEDGE_DIRS)
 
 
 def deny(reason: str) -> None:
@@ -103,8 +108,8 @@ def main() -> None:
     if role == "test-writer":
         if in_td and fnmatch.fnmatch(name, "dispositions-*-tests.json"):
             sys.exit(0)
-        if rel and rel.startswith(PRODUCT_DOCS):
-            deny("la connaissance produit (docs/product/) est hors de portée du rédacteur de tests")
+        if rel and is_knowledge(rel):
+            deny("la connaissance produit et l'architecture (PRODUCT.md, ARCHITECTURE.md, docs/) sont hors de portée du rédacteur de tests")
         if rel and is_test(rel):
             if locked and is_acceptance(rel):
                 deny("le test d'acceptation est verrouillé depuis la phase rouge")
@@ -117,8 +122,8 @@ def main() -> None:
             deny("hors du worktree de la tâche")
         if is_test(rel):
             deny("l'implémenteur ne modifie jamais les tests : fais passer le code, pas le test")
-        if rel.startswith((".forge/", ".github/", ".claude/", PRODUCT_DOCS)):
-            deny("configuration du système, CI et connaissance produit hors de portée de l'implémenteur")
+        if rel.startswith((".forge/", ".github/", ".claude/")) or is_knowledge(rel):
+            deny("configuration du système, CI, connaissance produit et architecture hors de portée de l'implémenteur")
         sys.exit(0)
     sys.exit(0)
 

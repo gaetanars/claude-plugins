@@ -18,13 +18,14 @@ Sur les tâches depuis la dernière rétro (dernière ligne `[système] rétro` 
 - `review-*.json` et `dispositions-*.json` : remarques récurrentes, taux de refus (un taux élevé signale un relecteur bruyant ou un implémenteur qui résiste à tort) ;
 - `python3 .forge/bin/forge.py metrics <T>` : consommation par agent ; repère l'étape la plus chère et celle qui dérive ;
 - les entrées `[système]` de `.forge/learnings.md` ;
+- la dérive entre le code et les ADR acceptées (violations relevées en revue, écarts `ÉCART-ADR`) ;
 - l'issue des PR (`gh pr list --author @me --state all`) : CI rouges, PR fermées, reverts.
 
 ## 2. Diagnostic
 
 Au plus cinq constats, chacun avec sa preuve chiffrée et sa cause probable. Hiérarchie des remèdes, du plus fiable au moins fiable :
 
-1. une porte déterministe (règle de lint, seuil, contrôle dans `forge.py`, entrée de `gates`) ;
+1. une porte déterministe (règle de lint, seuil, contrôle dans `forge.py`, entrée de `gates`) ; une dérive récurrente par rapport à une ADR devient une règle exécutable ;
 2. une règle dans `.forge/conventions.md` (propre au projet) ou dans la skill `conventions` (universelle) ;
 3. une modification du prompt d'un agent ;
 4. un changement de modèle ou d'effort.
@@ -33,7 +34,7 @@ Une remarque de revue récurrente qu'un outil pourrait détecter devient une rè
 
 ## 3. Budget du système
 
-Six agents, quatre skills (`init`, `po`, `retro`, `conventions`), un workflow. Ajouter un élément oblige à en retirer un autre ou à justifier pourquoi le budget doit bouger. Un prompt qui s'allonge à chaque rétro est un signal d'alerte : préfère réécrire plus court.
+Six agents, cinq skills (`init`, `po`, `architect`, `retro`, `conventions`), un workflow. `architect` se justifie par un mandat distinct de celui du PO et un coût nul pendant la livraison. Ajouter un élément oblige à en retirer un autre ou à justifier pourquoi le budget doit bouger. Un prompt qui s'allonge à chaque rétro est un signal d'alerte : préfère réécrire plus court.
 
 ## 4. Proposition
 

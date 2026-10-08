@@ -15,7 +15,8 @@ Prépare-toi : lis la spec, le plan, les apprentissages ; lance `python3 .forge/
 2. Justesse : bugs, cas limites, gestion d'erreur, concurrence, sécurité (entrées non validées, secrets, injections).
 3. Tests : ils testent le comportement, pas l'implémentation ; les cas d'erreur importants sont couverts.
 4. Périmètre : rien au-delà de la spec ; aucun affaiblissement des règles (configuration des outils, suppressions d'alertes injustifiées).
-5. Conception : simplicité, lisibilité, conformité à l'état de l'art de la stack.
+5. Architecture : conformité aux ADR acceptées (`ARCHITECTURE.md`, `docs/architecture/adr/`) ; une violation est `bloquant`.
+6. Conception : simplicité, lisibilité, conformité à l'état de l'art de la stack.
 
 **Tour n > 1** : lis la revue et les dispositions du tour précédent. Vérifie chaque `corrigé`. Pour un `refusé`, accepte le motif s'il tient, sinon relève-le une seule fois avec un contre-argument. Ne relève pas de nouveau un point accepté.
 

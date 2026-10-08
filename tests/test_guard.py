@@ -110,6 +110,15 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("docs/product/specs/T001.md")), 2)
         self.assertEqual(self.call("learner", "Write", file_path=self.wt("docs/product/decisions.md")), 2)
 
+    def test_architecture_et_produit_hors_de_portee(self):
+        for rel in ("ARCHITECTURE.md", "docs/architecture/adr/0001-x.md", "PRODUCT.md"):
+            for role in ("implementer", "test-writer", "learner", "reviewer", "planner"):
+                self.assertEqual(self.call(role, "Write", file_path=self.wt(rel)), 2, (role, rel))
+
+    def test_plan_check_en_lecture(self):
+        for role in ("planner", "implementer", "reviewer"):
+            self.assertEqual(self.call(role, "Bash", command="python3 .forge/bin/forge.py plan-check T001"), 0, role)
+
     def test_runner(self):
         self.assertEqual(self.call("runner", "Bash", command="python3 .forge/bin/forge.py ship T001"), 0)
         self.assertEqual(self.call("runner", "Bash", command="ls"), 2)

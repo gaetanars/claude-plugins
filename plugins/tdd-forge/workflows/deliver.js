@@ -91,6 +91,9 @@ async function deliverTask(t) {
 
   if (todo('red')) {
     phase('Rouge')
+    const pc = await forge(`plan-check ${t}`, `${t} · contrôle du plan`)
+    if (pc.error) return { task: t, status: 'error', reason: pc.error }
+    if (pc.blocked) return await block(t, pc.reason || 'Plan en dépassement ou écart avec une ADR', pc)
     let instr = 'Phase rouge : écris le test d\'acceptation (un cas par AC-n, lié à son AC de façon visible dans les résultats de test) puis les autres tests prévus au plan. Ils doivent échouer pour la bonne raison.'
     for (;;) {
       if (!await work('test-writer', t, `${t} · tests rouges`, instr)) return stopped

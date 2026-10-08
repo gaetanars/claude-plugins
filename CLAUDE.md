@@ -24,7 +24,7 @@ Remote : `git@github.com:gaetanars/claude-plugins.git` (renommage depuis `tdd-fo
 Livraison autonome en TDD sur GitHub, indépendante de la stack : contrat de test = code de sortie + résultats JSON au format neutre (`results_path`), le projet portant lanceur, adaptateur, portes et méthodologie (`.forge/conventions.md`). Le contenu est du Markdown (agents, skills), du JS (workflow), du Python (hooks + moteur) et des assets copiés dans les projets cibles. `plugins/tdd-forge/README.md` décrit le parcours, les rôles et les garde-fous ; le lire avant toute modification structurelle.
 
 - Pas d'exécution de bout en bout vérifiée (voir « À vérifier au premier lancement » dans README.md : options de `agent()`, format de `agent_type` reçu par les hooks, `SubagentStop`, règle de permission `Workflow(tdd-forge:deliver)`). Ne pas présenter ces points comme acquis.
-- `forge.py` : `python3 plugins/tdd-forge/skills/init/assets/forge.py version` (sous-commandes : `status start red green tests-update review dispositions mark unblock context ship wait-merge approve backlog publish doctor gate version`).
+- `forge.py` : `python3 plugins/tdd-forge/skills/init/assets/forge.py version` (sous-commandes : `status start red green tests-update review dispositions mark unblock context plan-check ship wait-merge approve backlog publish doctor gate version`).
 
 ### Architecture (tout sous `plugins/tdd-forge/`)
 
@@ -36,9 +36,9 @@ Le plugin est un pipeline à trois couches qui communiquent **uniquement par fic
 
 Garde-fous en profondeur : `scripts/guard.py` (hook PreToolUse, périmètre d'écriture par rôle, ne s'applique qu'aux `agent_type` `tdd-forge:<rôle>` et seulement si `.forge/current` existe) ; `scripts/metrics.py` (hook SubagentStop → `.forge/metrics.jsonl`) ; contrôles de `forge.py` ; CI GitHub (`assets/forge-gates.yml`).
 
-Skills (`skills/`) : `po` (point d'entrée, avec `templates/`), `init` (installation et mise à jour), `retro`, `conventions` (invariants du flux, impose la lecture de `.forge/conventions.md` du projet cible, où vit la méthodologie de test et de code).
+Skills (`skills/`) : `po` (point d'entrée, avec `templates/`), `architect` (stack, ADR, squelette ; avec `templates/` ; chargée par `init` et `po`, ou directe), `init` (installation et mise à jour, cadrage à deux voix), `retro`, `conventions` (invariants du flux, impose la lecture de `.forge/conventions.md` du projet cible, où vit la méthodologie de test et de code).
 
-Fichiers versionnés du projet cible : `PRODUCT.md`, `docs/product/decisions.md`, `docs/product/specs/T00x.md` (spec figée, commitée par `start` dans la PR de la tâche), `.forge/conventions.md`. Le runtime (`state.json`, journal, revues) reste local.
+Fichiers versionnés du projet cible : `PRODUCT.md`, `ARCHITECTURE.md`, `docs/architecture/adr/`, `docs/product/decisions.md`, `docs/product/specs/T00x.md` (spec figée, commitée par `start` dans la PR de la tâche), `.forge/conventions.md`. Le runtime (`state.json`, journal, revues) reste local.
 
 ### Points de cohérence à respecter
 
