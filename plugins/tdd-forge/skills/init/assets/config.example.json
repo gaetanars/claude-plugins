@@ -1,19 +1,16 @@
 {
   "version": 1,
-  "stack": "python",
+  "stack": "<libellé informatif>",
   "default_branch": "main",
   "remote": "origin",
-  "test_globs": ["tests/*", "test_*.py", "*_test.py", "conftest.py"],
-  "acceptance_dir": "tests/acceptance",
-  "junit_path": ".forge/out/junit.xml",
-  "test_cmd": "uv run pytest -q -p no:cacheprovider --junitxml=.forge/out/junit.xml",
+  "test_globs": ["<motifs des fichiers de test>"],
+  "acceptance_globs": ["<motifs des tests d'acceptation>"],
+  "results_path": ".forge/out/results.json",
+  "test_cmd": "<commande de test qui écrit results_path et sort en erreur si un test échoue>",
   "gates": [
-    { "name": "format", "cmd": "uv run ruff format --check ." },
-    { "name": "lint", "cmd": "uv run ruff check ." },
-    { "name": "types", "cmd": "uv run pyright" },
-    { "name": "tests", "cmd": "uv run pytest -q -p no:cacheprovider --junitxml=.forge/out/junit.xml --cov --cov-fail-under=85", "tests": true }
+    { "name": "tests", "cmd": "<commande de test>", "tests": true }
   ],
-  "suppression_markers": ["# type: ignore", "# noqa", "# pyright: ignore", "pragma: no cover"],
+  "suppression_markers": [],
   "max_pr_lines": 400,
   "stall_rounds": 2,
   "auto_merge": true,

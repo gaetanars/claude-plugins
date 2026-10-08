@@ -1,4 +1,4 @@
-"""Banc d'essai de forge.py : dépôt git temporaire, remote nu local, `gh` factice, JUnit contrôlé."""
+"""Banc d'essai de forge.py : dépôt git temporaire, remote nu local, `gh` factice, résultats de test contrôlés."""
 import json
 import os
 import stat
@@ -14,12 +14,16 @@ FORGE = PLUGIN / "skills" / "init" / "assets" / "forge.py"
 GUARD = PLUGIN / "scripts" / "guard.py"
 
 FAKE_TESTS = """\
-import os, shutil, sys
+import json, os, shutil, sys
 from pathlib import Path
 Path('.forge/out').mkdir(parents=True, exist_ok=True)
-src = Path(os.environ['FAKE_JUNIT'])
-shutil.copy(src, '.forge/out/junit.xml')
-sys.exit(1 if '<failure' in src.read_text() else 0)
+src = Path(os.environ['FAKE_RESULTS'])
+shutil.copy(src, '.forge/out/results.json')
+try:
+    cases = json.loads(src.read_text())['cases']
+    sys.exit(1 if any(c['failed'] for c in cases) else 0)
+except (ValueError, KeyError, TypeError):
+    sys.exit(1)
 """
 
 FAKE_GH = """\
@@ -37,11 +41,15 @@ if a == ['issue', 'create']:
 """
 
 
-def junit(*cases):
-    """cases : (nom, échec ?) → contenu JUnit."""
-    body = "".join(f'<testcase classname="t" name="{n}">{"<failure message=\"ko\"/>" if bad else ""}</testcase>'
-                   for n, bad in cases)
-    return f'<testsuites><testsuite name="s">{body}</testsuite></testsuites>'
+def results(*cases):
+    """cases : (nom, échec ?) ou (nom, échec ?, acs) → contenu JSON neutre."""
+    out = []
+    for c in cases:
+        d = {"name": c[0], "failed": c[1]}
+        if len(c) > 2:
+            d["acs"] = c[2]
+        out.append(d)
+    return json.dumps({"cases": out})
 
 
 def sh(cmd, cwd, **kw):
@@ -51,8 +59,8 @@ def sh(cmd, cwd, **kw):
 class ForgeCase(unittest.TestCase):
     CONFIG = {
         "version": 1, "stack": "test", "default_branch": "main", "remote": "origin",
-        "test_globs": ["tests/*"], "acceptance_dir": "tests/acceptance",
-        "junit_path": ".forge/out/junit.xml", "suppression_markers": ["# noqa"],
+        "test_globs": ["tests/*"], "acceptance_globs": ["tests/acceptance/*"],
+        "results_path": ".forge/out/results.json", "suppression_markers": ["# noqa"],
         "max_pr_lines": 400, "stall_rounds": 2, "merge_method": "squash",
     }
 
@@ -83,12 +91,15 @@ class ForgeCase(unittest.TestCase):
         gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
         self.ghlog = self.tmp / "gh.log"
         self.env = {**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "GH_LOG": str(self.ghlog)}
-        self.set_junit()
+        self.set_results()
 
-    def set_junit(self, *cases):
-        f = self.tmp / "junit.xml"
-        f.write_text(junit(*cases))
-        self.env["FAKE_JUNIT"] = str(f)
+    def set_results(self, *cases):
+        self.set_results_raw(results(*cases))
+
+    def set_results_raw(self, text):
+        f = self.tmp / "results.json"
+        f.write_text(text)
+        self.env["FAKE_RESULTS"] = str(f)
 
     def spec(self, task="T001", acs=("AC-1",), extra="", approve=True, deps=""):
         d = self.repo / ".forge" / "backlog" / task
@@ -124,6 +135,6 @@ class ForgeCase(unittest.TestCase):
         self.assertTrue(self.forge("start", task)["ok"])
         (self.repo / ".forge" / "backlog" / task / "plan.md").write_text("plan")
         self.write("tests/acceptance/test_a.py", "# AC-1\n", task)
-        self.set_junit(("test_ac_1", True))
+        self.set_results(("test_ac_1", True))
         r = self.forge("red", task)
         self.assertTrue(r["ok"], r)

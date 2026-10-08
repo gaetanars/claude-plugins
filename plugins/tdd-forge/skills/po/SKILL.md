@@ -17,7 +17,7 @@ Français, réponses courtes lisibles sur téléphone, une seule question à la 
 ## 0. Prérequis
 
 - Si `.forge/config.json` ou `.forge/bin/forge.py` manque : arrête-toi et propose `/tdd-forge:init`.
-- Lance `python3 .forge/bin/forge.py doctor`. S'il échoue (version du moteur, JUnit, remote, `gh`), montre les contrôles en échec et propose `/tdd-forge:init` (il sert aussi à la mise à jour).
+- Lance `python3 .forge/bin/forge.py doctor`. S'il échoue (version du moteur, résultats de test, remote, `gh`), montre les contrôles en échec et propose `/tdd-forge:init` (il sert aussi à la mise à jour).
 
 ## 1. Triage
 
@@ -67,7 +67,7 @@ Une **tâche** est un incrément observable, testable par une interface publique
 
 Pour chaque tâche, écris `.forge/backlog/<T>/spec.md` sur le modèle `templates/spec.md` (frontmatter `id`, `title`, `depends_on` ; aucun champ `validated`) :
 
-- critères `AC-1`, `AC-2`… en Étant donné / Quand / Alors, chacun vérifiable par un test automatique, sans détail d'implémentation. Chaque `AC-n` sera tracé dans le rapport JUnit : un critère non testable est un critère mal écrit ;
+- critères `AC-1`, `AC-2`… en Étant donné / Quand / Alors, chacun vérifiable par un test automatique, sans détail d'implémentation. Chaque `AC-n` sera tracé dans les résultats de test : un critère non testable est un critère mal écrit ;
 - l'interface publique par laquelle le test d'acceptation les prouvera ;
 - le hors périmètre, explicite.
 

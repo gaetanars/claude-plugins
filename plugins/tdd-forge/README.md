@@ -1,8 +1,8 @@
 # tdd-forge
 
-Livraison autonome en TDD avec Claude Code, sur GitHub, **indépendante du langage** : Python, TypeScript/JS, Go, Rust, Java/Kotlin, .NET, Ruby, PHP.
+Livraison autonome en TDD avec Claude Code, sur GitHub, **indépendante de la stack** : le plugin porte le flux, le projet porte la technique (lanceur, framework, dossiers, types de tests, couverture, style).
 
-> **Statut : v0.2, expérimental.** Le moteur (`forge.py`) et le hook (`guard.py`) sont couverts par des tests, mais la chaîne n'a pas encore tourné de bout en bout dans Claude Code. Lis [« À vérifier au premier lancement »](#à-vérifier-au-premier-lancement) avant de l'utiliser sur un dépôt qui compte. Il pousse des branches, ouvre des PR et peut les fusionner : essaie-le d'abord sur un dépôt jetable.
+> **Statut : v0.3, expérimental.** Le moteur (`forge.py`) et le hook (`guard.py`) sont couverts par des tests, mais la chaîne n'a pas encore tourné de bout en bout dans Claude Code. Lis [« À vérifier au premier lancement »](#à-vérifier-au-premier-lancement) avant de l'utiliser sur un dépôt qui compte. Il pousse des branches, ouvre des PR et peut les fusionner : essaie-le d'abord sur un dépôt jetable.
 
 Trois commandes :
 
@@ -28,9 +28,9 @@ Tu ne parles qu'au Product Owner. Il cadre et challenge ; tu donnes ton accord s
 workflow tdd-forge:deliver        ← autonome, une tâche après l'autre
   Préparation   forge.py start          worktree .forge/worktrees/T001, spec figée commitée
   Plan          planner (Opus)          plan.md
-  Rouge         test-writer (Sonnet)    tests d'acceptation (un testcase par AC-n) + unitaires
-                forge.py red            chaque AC-n a un testcase en échec dans le JUnit
-  Vert          implementer (Sonnet) ⇄ forge.py green   chaque AC-n a un testcase au vert
+  Rouge         test-writer (Sonnet)    tests d'acceptation (un cas par AC-n) + autres tests du plan
+                forge.py red            chaque AC-n a un cas en échec dans les résultats
+  Vert          implementer (Sonnet) ⇄ forge.py green   chaque AC-n a un cas au vert
   Refactor      implementer ⇄ forge.py green
   Revue         reviewer (Opus) → review-n.json
                 test-writer / implementer → dispositions (corrigé · refusé motivé · reporté)
@@ -39,10 +39,18 @@ workflow tdd-forge:deliver        ← autonome, une tâche après l'autre
 ```
 
 ## Contrat universel de test
+Le plugin ne présuppose ni langage, ni lanceur, ni framework. Il exige seulement :
 
-Une porte `tests` du `.forge/config.json` exécute les tests, sort en erreur s'ils échouent et écrit un **rapport JUnit XML** (`junit_path`, glob accepté). `forge.py` lit ce rapport : il n'y a aucune branche de code par langage. `skills/init/references/ecosystems.md` donne, par écosystème, le lanceur, l'option JUnit, le format, le lint, le typage, la couverture, la CI, les `test_globs` et les marqueurs de suppression ; `forge.py doctor` valide la config produite. Un écosystème sans JUnit n'est pas pris en charge.
+- une commande de test (`test_cmd`) dont le code de sortie reflète le résultat ;
+- des **résultats au format neutre** à `results_path` (glob accepté, fichiers concaténés) :
+  `{"cases": [{"name": "AC-1 refuse un montant négatif", "failed": true, "acs": ["AC-1"]}]}` ;
+- des portes libres (`gates`), dont une marquée `"tests": true`, et les motifs `test_globs` et `acceptance_globs`.
 
-**Traçabilité** : l'identifiant `AC-n` (insensible à la casse : `AC-1`, `ac1`, `AC_01`) figure dans le nom ou la classe du testcase. En rouge, chaque AC doit avoir ≥ 1 testcase en échec ; en vert, ≥ 1 testcase et aucun en échec. Un AC absent est signalé nommément.
+Si le lanceur n'écrit pas ce format, la commande de test s'en charge ou `init` écrit un **adaptateur du projet** dans `.forge/adapters/` (versionné, protégé). `skills/init/references/contract.md` décrit le contrat complet ; `forge.py doctor` valide la config produite. Tout le *comment* (types de tests, granularité, couverture, style) est défini dans `.forge/conventions.md` du projet.
+
+**Traçabilité** : `acs` (explicite) ou, à défaut, l'identifiant `AC-n` dans le nom du cas (insensible à la casse : `AC-1`, `ac1`, `AC_01`). En rouge, chaque AC doit avoir ≥ 1 cas en échec ; en vert, ≥ 1 cas et aucun en échec. Un AC absent est signalé nommément.
+
+`python3` est l'outillage du *plugin* (moteur et hooks), pas un choix imposé au projet.
 
 ## Rôles
 
@@ -62,21 +70,21 @@ Une porte `tests` du `.forge/config.json` exécute les tests, sort en erreur s'i
 1. **Accord figé** : `forge.py approve` enregistre l'empreinte sha256 de la spec ; `status` refuse toute spec non approuvée ou modifiée depuis. `approve` et `publish` sont interdits à tous les sous-agents.
 2. **Hook `guard.py`** (PreToolUse) : chaque agent n'écrit que dans son périmètre (`docs/product/` hors de portée de l'implémenteur et du rédacteur de tests) ; `git` en écriture et `gh` sont interdits aux agents ; le runner n'exécute que `forge.py`.
 3. **Contrôles de `forge.py`** : toute modification de test ou de config par l'implémenteur est annulée et comptée comme violation ; l'empreinte du test d'acceptation est vérifiée ; la phase rouge exige un échec par AC.
-4. **Portes déterministes** (format, lint, typage, tests, couverture) avant toute revue LLM.
+4. **Portes du projet** (déterministes) avant toute revue LLM.
 5. **CI GitHub** qui rejoue les mêmes portes, et protection de `main`.
 6. **Merge automatique conditionné** à la CI verte. Sans CI, pas de merge.
 7. **Arrêt sur absence de progrès** : deux tours sans amélioration → PR en brouillon avec le motif, chaîne arrêtée. Le PO trie les blocages en début de session.
 
 ## Installation
 
-Prérequis : Claude Code 2.1.271 ou plus, `git`, `gh` authentifié, `python3` 3.9 ou plus (même pour un dépôt Go ou Rust), l'outillage de la stack.
+Prérequis : Claude Code 2.1.271 ou plus, `git`, `gh` authentifié, `python3` 3.9 ou plus (outillage du plugin, quelle que soit la stack du projet), l'outillage de la stack.
 
 1. Dans Claude Code :
    ```
    /plugin marketplace add gaetanars/claude-plugins
    /plugin install tdd-forge@gaetanars
    ```
-2. Dans chaque projet : `/tdd-forge:init`. Sur un dépôt vide il mène l'entretien de vision, propose une stack et crée un squelette minimal avec un test de fumée.
+2. Dans chaque projet : `/tdd-forge:init`. Sur un dépôt vide il mène l'entretien de vision, propose librement une stack (tu tranches) et crée un squelette minimal avec un test de fumée.
 
 Réglages conseillés dans ton `~/.claude/settings.json` : `"autoContinueAtUsageLimit": true`. Empêche la mise en veille pendant une livraison (macOS : `caffeinate -i`).
 
@@ -123,7 +131,7 @@ Ces points reposent sur la documentation de Claude Code, pas sur une exécution 
 - **`AskUserQuestion` dans une skill** (`po`, `init`, `retro`) : sinon, l'accord se demande en texte (« ok » / « ok sauf n »), sans changer le parcours.
 - `claude plugin validate --strict plugins/tdd-forge` avant la première installation.
 
-Fais une première livraison sur une tâche minuscule, en restant devant l'écran. Un dépôt jetable Python et un Go prouvent le multi-langage.
+Fais une première livraison sur une tâche minuscule, en restant devant l'écran. Un dépôt jetable avec un simple script qui écrit `results.json` prouve qu'aucune techno n'est présupposée.
 
 ## Contribuer
 
@@ -133,7 +141,8 @@ Voir le [README de la marketplace](../../README.md#contribuer). Les points de co
 
 - **GitHub uniquement.** GitLab n'est pas codé dans `forge.py`.
 - **Tâches séquentielles** : pas de parallélisme, pour éviter les conflits entre branches auto-mergées.
-- **JUnit obligatoire** : un écosystème sans rapport JUnit n'est pas pris en charge. Les tests unitaires placés dans les fichiers source (Rust `#[cfg(test)]`) ne sont pas reconnus comme tests par `test_globs` : préfère `tests/`.
+- **Tests intégrés aux fichiers source** (ex. Rust `#[cfg(test)]`) : incompatibles avec la séparation des rôles par fichiers. C'est une limite du flux, pas d'un langage.
+- **Moteur et hooks en Python** : outillage du plugin, sans contrainte sur le projet.
 - **Contournement par le shell** : un agent qui modifierait un test via Bash n'est pas bloqué au moment même, mais la modification est annulée au contrôle suivant.
 - **Relecteur de la même famille de modèles** que l'implémenteur : les portes déterministes et la CI restent le vrai filet.
 

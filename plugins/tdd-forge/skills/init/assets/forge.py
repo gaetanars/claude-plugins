@@ -7,7 +7,7 @@ technique ({"error": ...}). Exception : `gate` sort en 1 si une porte échoue (C
 
 Seul ce script commite, pousse, ouvre et merge les PR. Les agents ne le font jamais.
 État durable par tâche : .forge/backlog/<T>/state.json + journal.jsonl (reprise sur erreur).
-Contrat de test universel : code de sortie + rapport JUnit XML, quel que soit le langage.
+Contrat de test neutre : code de sortie + résultats JSON (`results_path`), quelle que soit la stack du projet.
 """
 from __future__ import annotations
 
@@ -20,10 +20,9 @@ import re
 import subprocess
 import sys
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 TAIL = 3000
 DISPO = {"corrigé": "corrigé", "corrige": "corrigé", "refusé": "refusé", "refuse": "refusé",
          "reporté": "reporté", "reporte": "reporté"}
@@ -105,16 +104,18 @@ class Ctx:
                                ensure_ascii=False) + "\n")
 
 
-def acc_dir(cfg) -> str:
-    return cfg["acceptance_dir"].strip("/")
+def _match(rel: str, globs) -> bool:
+    rel = rel.replace(os.sep, "/")
+    name = rel.rsplit("/", 1)[-1]
+    return any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g) for g in globs or [])
+
+
+def is_acceptance(rel: str, cfg) -> bool:
+    return _match(rel, cfg.get("acceptance_globs"))
 
 
 def is_test(rel: str, cfg) -> bool:
-    rel = rel.replace(os.sep, "/")
-    if rel.startswith(acc_dir(cfg) + "/"):
-        return True
-    name = rel.rsplit("/", 1)[-1]
-    return any(fnmatch.fnmatch(rel, g) or fnmatch.fnmatch(name, g) for g in cfg["test_globs"])
+    return is_acceptance(rel, cfg) or _match(rel, cfg.get("test_globs"))
 
 
 def is_protected(rel: str) -> bool:
@@ -164,11 +165,11 @@ def ensure_ignored(base: Path, rel_dir: str) -> None:
         (d / ".gitignore").write_text("*\n")
 
 
-def hash_tree(root: Path, rel_dir: str) -> dict:
-    """Empreinte des fichiers suivis ou non ignorés d'un dossier (ignore __pycache__, out, etc.)."""
-    files = run(["git", "ls-files", "-co", "--exclude-standard", "-z", "--", rel_dir], root).stdout.split("\0")
+def hash_tree(root: Path, cfg) -> dict:
+    """Empreinte des fichiers d'acceptation (suivis ou non ignorés, filtrés par `acceptance_globs`)."""
+    files = run(["git", "ls-files", "-co", "--exclude-standard", "-z"], root).stdout.split("\0")
     return {f: hashlib.sha256((root / f).read_bytes()).hexdigest()
-            for f in sorted(files) if f and (root / f).is_file()}
+            for f in sorted(set(files)) if f and is_acceptance(f, cfg) and (root / f).is_file()}
 
 
 AC_RE = re.compile(r"(?<![A-Za-z])AC[-_ ]?(\d+)", re.I)
@@ -218,48 +219,54 @@ def delivered(ctx: Ctx, t: str) -> bool:
 
 # ---------------------------------------------------------------- portes
 
-def junit_files(wt: Path, cfg) -> list[Path]:
-    """`junit_path` peut être un glob (surefire, gradle écrivent un fichier par classe)."""
-    return sorted(wt.glob(cfg.get("junit_path", ".forge/out/junit.xml")))
+def results_files(wt: Path, cfg) -> list[Path]:
+    """`results_path` peut être un glob ; plusieurs fichiers sont concaténés."""
+    return sorted(wt.glob(cfg.get("results_path", ".forge/out/results.json")))
 
 
-def clear_junit(wt: Path, cfg) -> None:
-    for f in junit_files(wt, cfg):
+def clear_results(wt: Path, cfg) -> None:
+    for f in results_files(wt, cfg):
         f.unlink()
 
 
-def junit_cases(wt: Path, cfg):
-    """Cas de test du rapport JUnit : [{name, classname, failed}], ou None si absent/illisible.
-    Une erreur de collecte sans testcase est comptée dans `suite_errors`."""
-    files = junit_files(wt, cfg)
+def read_results(wt: Path, cfg):
+    """Résultats au format neutre `{"cases": [{name, failed, acs?}]}` : (rapport, None), ou (None, raison)
+    si absent, illisible ou hors schéma."""
+    files = results_files(wt, cfg)
     if not files:
-        return None
-    cases, errors = [], 0
+        return None, f"aucun fichier de résultats à {cfg.get('results_path', '.forge/out/results.json')}"
+    cases = []
     for p in files:
         try:
-            root = ET.parse(p).getroot()
-        except ET.ParseError:
-            return None
-        cases += [{"name": tc.get("name") or "", "classname": tc.get("classname") or "",
-                   "failed": any(ch.tag in ("failure", "error") for ch in tc)} for tc in root.iter("testcase")]
-        errors += sum(int(ts.get("errors") or 0) + int(ts.get("failures") or 0) for ts in root.iter("testsuite"))
-    if cases:
-        errors = 0  # les erreurs de collecte ne comptent que sans aucun testcase
-    return {"cases": cases, "suite_errors": errors}
+            data = json.loads(p.read_text())
+        except (OSError, ValueError) as e:
+            return None, f"{p.name} : JSON illisible ({e})"
+        raw = data.get("cases") if isinstance(data, dict) else None
+        if not isinstance(raw, list):
+            return None, f"{p.name} : clé `cases` (liste) absente"
+        for n, c in enumerate(raw):
+            if not isinstance(c, dict) or not isinstance(c.get("name"), str) or not isinstance(c.get("failed"), bool):
+                return None, f"{p.name} : cas {n} invalide (`name` texte et `failed` booléen requis)"
+            acs = c.get("acs")
+            if acs is not None and (not isinstance(acs, list) or not all(isinstance(a, str) for a in acs)):
+                return None, f"{p.name} : cas {n} invalide (`acs` doit être une liste de textes)"
+            cases.append({"name": c["name"], "failed": c["failed"], "acs": acs})
+    return {"cases": cases}, None
 
 
-def junit_counts(report):
+def results_counts(report):
     if report is None:
         return None
     cases = report["cases"]
-    return {"total": len(cases), "failed": sum(c["failed"] for c in cases) or report["suite_errors"]}
+    return {"total": len(cases), "failed": sum(c["failed"] for c in cases)}
 
 
 def ac_status(acs: list[str], report) -> dict:
-    """Pour chaque AC : nombre de testcases dont le nom ou la classe le porte, et combien échouent."""
+    """Pour chaque AC : nombre de cas qui le portent (`acs` explicite, sinon le nom), et combien échouent."""
     per = {a: {"cases": 0, "failing": 0} for a in acs}
     for c in (report or {"cases": []})["cases"]:
-        for a in set(ac_ids(c["name"]) + ac_ids(c["classname"])):
+        ids = ac_ids(" ".join(c["acs"])) if c.get("acs") is not None else ac_ids(c["name"])
+        for a in set(ids):
             if a in per:
                 per[a]["cases"] += 1
                 per[a]["failing"] += c["failed"]
@@ -281,14 +288,14 @@ def run_gates(wt: Path, cfg) -> dict:
     steps = []
     for g in cfg["gates"]:
         if g.get("tests"):
-            clear_junit(wt, cfg)
+            clear_results(wt, cfg)
         t0 = time.time()
         ok, out = run_cmd(g["cmd"], wt, g.get("timeout", 1500))
         steps.append({"name": g["name"], "ok": ok, "seconds": round(time.time() - t0, 1),
                       "output": "" if ok else tail(out)})
-    report = junit_cases(wt, cfg)
+    report, results_error = read_results(wt, cfg)
     return {"passed": all(s["ok"] for s in steps), "steps": steps, "report": report,
-            "tests": junit_counts(report), "failed_steps": sum(not s["ok"] for s in steps)}
+            "results_error": results_error, "tests": results_counts(report), "failed_steps": sum(not s["ok"] for s in steps)}
 
 
 def diff_info(ctx: Ctx, base: str) -> dict:
@@ -473,25 +480,27 @@ def cmd_red(ctx: Ctx) -> dict:
     if non_test:
         restore(wt, non_test)
     tests = [p for p in changes if is_test(p, cfg)]
-    acc = [p for p in tests if p.startswith(acc_dir(cfg) + "/")]
+    acc = [p for p in tests if is_acceptance(p, cfg)]
     problems = []
     if non_test:
         problems.append(f"fichiers hors tests annulés : {', '.join(non_test)}")
     if not acc:
-        problems.append(f"aucun test d'acceptation sous {acc_dir(cfg)}/")
+        problems.append(f"aucun test d'acceptation parmi acceptance_globs ({', '.join(cfg.get('acceptance_globs', []))})")
     (wt / ".forge" / "out").mkdir(parents=True, exist_ok=True)
-    clear_junit(wt, cfg)
+    clear_results(wt, cfg)
     ok, out = run_cmd(cfg["test_cmd"], wt, cfg.get("test_timeout", 1500))
-    report = junit_cases(wt, cfg)
-    counts = junit_counts(report)
+    report, results_error = read_results(wt, cfg)
+    counts = results_counts(report)
     ac = ac_status(acs, report)
     if ok:
         problems.append("les tests passent déjà : ils ne prouvent rien, la phase rouge exige un échec")
-    elif not counts or counts["failed"] == 0:
-        problems.append("échec sans test en échec identifiable dans le rapport JUnit (outillage ?)")
+    elif report is None:
+        problems.append(f"résultats de test inexploitables : {results_error}")
+    elif counts["failed"] == 0:
+        problems.append("échec sans test en échec identifiable dans les résultats (outillage ?)")
     else:
         if ac["no_case"]:
-            problems.append(f"critères sans testcase (l'identifiant AC-n doit figurer dans le nom du test) : {', '.join(ac['no_case'])}")
+            problems.append(f"critères sans cas de test (l'identifiant AC-n doit figurer dans le nom du cas ou dans `acs`) : {', '.join(ac['no_case'])}")
         if ac["none_failing"]:
             problems.append(f"critères dont aucun test n'échoue : {', '.join(ac['none_failing'])}")
     if problems:
@@ -506,7 +515,7 @@ def cmd_red(ctx: Ctx) -> dict:
                 "ac_missing": ac["no_case"] + ac["none_failing"], "ac_failing": ac["failing"]}
     meta, _, _ = read_spec(ctx)
     sha = commit(wt, f"test({ctx.task}): phase rouge — {meta.get('title', '')}")
-    st.update(red_sha=sha, tests_baseline=sha, acceptance_hash=hash_tree(wt, acc_dir(cfg)), stall_red=0)
+    st.update(red_sha=sha, tests_baseline=sha, acceptance_hash=hash_tree(wt, cfg), stall_red=0)
     ctx.save(st)
     ctx.log("red", sha=sha, failing=counts)
     return {"ok": True, "red_sha": sha, "tests": counts, "ac_failing": ac["failing"]}
@@ -519,7 +528,7 @@ def cmd_green(ctx: Ctx, phase: str) -> dict:
     if bad:
         restore(wt, bad)
         violations.append(f"modifications interdites annulées (tests ou config) : {', '.join(bad)}")
-    if hash_tree(wt, acc_dir(cfg)) != st.get("acceptance_hash"):
+    if hash_tree(wt, cfg) != st.get("acceptance_hash"):
         violations.append("le test d'acceptation verrouillé a changé")
     g = run_gates(wt, cfg)
     info = diff_info(ctx, st["base_sha"])
@@ -527,8 +536,10 @@ def cmd_green(ctx: Ctx, phase: str) -> dict:
     _, acs, _ = read_spec(ctx)
     ac = ac_status(acs, g["report"])
     if g["passed"]:
+        if g["report"] is None:
+            violations.append(f"résultats de test inexploitables : {g['results_error']}")
         if ac["no_case"]:
-            violations.append(f"critères sans testcase dans le rapport JUnit : {', '.join(ac['no_case'])}")
+            violations.append(f"critères sans cas de test dans les résultats : {', '.join(ac['no_case'])}")
         if ac["failing"]:
             violations.append(f"critères avec un test en échec : {', '.join(ac['failing'])}")
     if g["passed"] and not violations:
@@ -564,7 +575,7 @@ def cmd_tests_update(ctx: Ctx) -> dict:
     changes = changed_paths(wt)
     problems = []
     non_test = [p for p in changes if not is_test(p, cfg)]
-    acc = [p for p in changes if p.startswith(acc_dir(cfg) + "/")]
+    acc = [p for p in changes if is_acceptance(p, cfg)]
     if non_test or acc:
         restore(wt, non_test + acc)
         problems.append(f"modifications annulées (hors tests ou acceptation verrouillée) : {', '.join(non_test + acc)}")
@@ -668,7 +679,9 @@ def cmd_unblock(ctx: Ctx) -> dict:
 def cmd_context(ctx: Ctx) -> dict:
     st = ctx.state()
     return {"task": ctx.task, "base_sha": st.get("base_sha"), "worktree": str(ctx.wt.relative_to(ctx.root)),
-            "acceptance_dir": acc_dir(ctx.cfg), "test_cmd": ctx.cfg["test_cmd"],
+            "acceptance_globs": ctx.cfg.get("acceptance_globs", []), "test_cmd": ctx.cfg["test_cmd"],
+            "results_path": ctx.cfg.get("results_path", ".forge/out/results.json"),
+            "gates": [g["name"] for g in ctx.cfg.get("gates", [])],
             "stack": ctx.cfg.get("stack"), "review_round": st.get("review_round", 0),
             **(diff_info(ctx, st["base_sha"]) if st.get("base_sha") else {})}
 
@@ -875,24 +888,28 @@ def cmd_publish(ctx: Ctx, message: str, paths: list[str], manual: bool) -> dict:
 
 
 def cmd_doctor(ctx: Ctx, plugin_version: str | None) -> dict:
-    """Contrôle déterministe d'une config écrite par un LLM, quel que soit le langage."""
+    """Contrôle déterministe d'une config écrite par un LLM, quelle que soit la stack."""
     cfg, root, checks = ctx.cfg, ctx.root, []
 
     def check(name, ok, detail=""):
         checks.append({"name": name, "ok": bool(ok), "detail": detail})
 
-    missing = [k for k in ("test_cmd", "gates", "acceptance_dir", "test_globs") if not cfg.get(k)]
+    missing = [k for k in ("test_cmd", "gates", "results_path", "acceptance_globs", "test_globs") if not cfg.get(k)]
     check("config", not missing, f"clés manquantes : {', '.join(missing)}" if missing else "clés requises présentes")
     if "test_cmd" in cfg:
         (root / ".forge" / "out").mkdir(parents=True, exist_ok=True)
-        clear_junit(root, cfg)
+        clear_results(root, cfg)
         ok, out = run_cmd(cfg["test_cmd"], root, cfg.get("test_timeout", 1500))
-        rep = junit_cases(root, cfg)
-        n = len(rep["cases"]) if rep else 0
-        check("junit", n >= 1, f"{n} testcase(s) dans {cfg.get('junit_path', '.forge/out/junit.xml')}"
-              if n else f"aucun rapport JUnit exploitable (code de sortie {'0' if ok else '≠0'}) : {tail(out, 600)}")
+        if not cfg.get("results_path"):
+            check("results", False, "`results_path` absent : les résultats doivent être au format neutre "
+                  "(voir references/contract.md) ; lance /tdd-forge:init pour écrire l'adaptateur du projet")
+        else:
+            rep, err = read_results(root, cfg)
+            n = len(rep["cases"]) if rep else 0
+            check("results", n >= 1, f"{n} cas de test dans {cfg['results_path']}" if n else
+                  f"résultats inexploitables ({err}) ; code de sortie {'0' if ok else '≠0'} : {tail(out, 600)}")
         if not any(g.get("tests") for g in cfg.get("gates", [])):
-            check("gates", False, "aucune porte marquée `\"tests\": true` : la traçabilité AC-n n'a pas de rapport")
+            check("gates", False, "aucune porte marquée `\"tests\": true` : la traçabilité AC-n n'a pas de résultats")
     url = run(["git", "remote", "get-url", cfg.get("remote", "origin")], root)
     check("remote", url.returncode == 0 and "github.com" in url.stdout, url.stdout.strip() or "remote absent")
     check("gh", _gh(["auth", "status"], root).returncode == 0, "gh authentifié")

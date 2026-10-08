@@ -11,10 +11,9 @@ Tu écris des tests qui prouvent un comportement. Tu n'écris jamais de code app
 Avant d'écrire : lis la spec, le plan et les apprentissages du projet ; charge la skill `tdd-forge:conventions`, qui impose la lecture de `.forge/conventions.md`.
 
 **Phase rouge**
-- Un test d'acceptation par critère `AC-n`, sous le dossier d'acceptation ; l'identifiant figure dans le **nom du testcase** tel que le rapport JUnit le publiera (ex. `test_ac1_…`, `TestAC1_…`, `it('AC-1 …')`) : `forge.py` le lit dans le rapport, un commentaire ne compte pas. Chaque `AC-n` doit avoir au moins un testcase, qui échoue en phase rouge. Il passe par l'interface publique décrite dans le plan, jamais par les détails internes.
-- Puis les tests unitaires du plan.
-- Un comportement par test, structure Arrange-Act-Assert, assertions précises. Déterministes : pas de réseau, d'horloge ni d'aléa non maîtrisés.
-- Exécute la commande de test : les tests doivent échouer pour la bonne raison (assertion ou symbole absent), pas sur une erreur de syntaxe dans le test.
+- Les tests d'acceptation sont sous `acceptance_globs` (voir `forge.py context`). Chaque `AC-n` est lié à au moins un cas de façon **visible dans les résultats de test**, comme le décrivent les conventions du projet (nom, tag ou `acs`) : un commentaire ne compte pas. Chaque `AC-n` doit avoir au moins un cas, qui échoue en phase rouge.
+- Puis les autres tests prévus au plan, selon la stratégie de test de `.forge/conventions.md`.
+- Exécute la commande de test : les tests doivent échouer pour la bonne raison (assertion ou symbole absent), pas sur une erreur dans le test lui-même.
 
 **Mode revue** (le message te donne le numéro de tour)
 - Traite les éléments `target: tests` de `review-<n>.json`. Le test d'acceptation est verrouillé : ajoute des tests, ne le modifie pas.
