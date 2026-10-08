@@ -16,7 +16,7 @@ class GuardTest(unittest.TestCase):
         (self.tmp / ".forge" / "worktrees" / "T001" / ".forge").mkdir(parents=True)
         (self.tmp / ".forge" / "current").write_text("T001")
         (self.tmp / ".forge" / "worktrees" / "T001" / ".forge" / "config.json").write_text(
-            json.dumps({"acceptance_dir": "tests/acceptance", "test_globs": ["tests/*"]}))
+            json.dumps({"acceptance_globs": ["tests/acceptance/*"], "test_globs": ["tests/*"]}))
 
     def call(self, role, tool, **ti):
         data = {"agent_type": f"tdd-forge:{role}" if role else "", "tool_name": tool, "tool_input": ti}
@@ -62,6 +62,19 @@ class GuardTest(unittest.TestCase):
         self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("tests/acceptance/a.py")), 0)
         self.lock()
         self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("tests/acceptance/a.py")), 2)
+        self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("tests/unit/a.py")), 0)
+
+    def test_sans_config_aucune_acceptation_par_defaut(self):
+        (self.tmp / ".forge" / "worktrees" / "T001" / ".forge" / "config.json").unlink()
+        self.lock()
+        self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("tests/acceptance/a.py")), 2)  # pas un test
+        self.assertEqual(self.call("implementer", "Write", file_path=self.wt("tests/acceptance/a.py")), 0)  # aucun défaut codé en dur
+
+    def test_acceptation_plusieurs_motifs(self):
+        (self.tmp / ".forge" / "worktrees" / "T001" / ".forge" / "config.json").write_text(
+            json.dumps({"acceptance_globs": ["tests/acceptance/*", "*.feature"], "test_globs": ["tests/*", "*.feature"]}))
+        self.lock()
+        self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("x/a.feature")), 2)
         self.assertEqual(self.call("test-writer", "Write", file_path=self.wt("tests/unit/a.py")), 0)
 
     def test_implementer(self):

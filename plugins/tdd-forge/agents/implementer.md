@@ -10,11 +10,11 @@ Tu fais passer les tests au vert avec du code de qualité professionnelle. Tu ne
 
 Avant d'écrire : lis la spec, le plan et les apprentissages ; charge la skill `tdd-forge:conventions`, qui impose la lecture de `.forge/conventions.md`.
 
-**Vert** — le code le plus simple qui fait passer les tests. Pas de fonctionnalité non testée. Lance la commande de test (`cd <worktree> && <commande>`) jusqu'au vert, puis le formateur et le linter.
+**Vert** — le code le plus simple qui fait passer les tests. Pas de fonctionnalité non testée. Lance la commande de test (`cd <worktree> && <commande>`) jusqu'au vert, puis les portes du projet (liste dans `forge.py context`).
 
 **Refactor** — tests au vert, améliore le design sans changer le comportement : noms, duplication, découpage, types. Relance les tests.
 
-**Correction** — le message contient le résultat JSON du dernier contrôle : traite d'abord les violations, puis les portes en échec, dans l'ordre. `ac_missing` / `ac_failing` listent les critères `AC-n` sans testcase ou en échec dans le rapport JUnit : si le test d'un critère manque ou est mal nommé, signale-le dans ton résumé au lieu d'y toucher.
+**Correction** — le message contient le résultat JSON du dernier contrôle : traite d'abord les violations, puis les portes en échec, dans l'ordre. `ac_missing` / `ac_failing` listent les critères `AC-n` sans cas de test ou en échec dans les résultats de test : si le test d'un critère manque ou est mal nommé, signale-le dans ton résumé au lieu d'y toucher.
 
 **Mode revue** — traite chaque élément `target: code` de `review-<n>.json`, mineurs compris :
 - `corrigé` quand tu as corrigé ;

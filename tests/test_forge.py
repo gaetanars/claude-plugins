@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from tests._forge import ForgeCase, junit
+from tests._forge import ForgeCase
 
 
 class StatusTest(ForgeCase):
@@ -116,14 +116,14 @@ class RedTest(ForgeCase):
 
     def test_rouge_valide(self):
         self.write("tests/acceptance/test_a.py", "# AC-1\n")
-        self.set_junit(("test_ac_1", True))
+        self.set_results(("test_ac_1", True))
         r = self.forge("red", "T001")
         self.assertTrue(r["ok"], r)
         self.assertEqual(self.forge("status", "T001")["next"], "green")
 
     def test_tests_deja_verts_refuses(self):
         self.write("tests/acceptance/test_a.py", "# AC-1\n")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         r = self.forge("red", "T001")
         self.assertFalse(r["ok"])
         self.assertTrue(any("passent déjà" in p for p in r["problems"]))
@@ -131,26 +131,26 @@ class RedTest(ForgeCase):
     def test_fichier_hors_tests_annule(self):
         self.write("tests/acceptance/test_a.py", "# AC-1\n")
         src = self.write("src/app.py")
-        self.set_junit(("test_ac_1", True))
+        self.set_results(("test_ac_1", True))
         r = self.forge("red", "T001")
         self.assertFalse(r["ok"])
         self.assertFalse(src.exists())
 
     def test_aucun_test_acceptation(self):
         self.write("tests/unit/test_u.py")
-        self.set_junit(("test_u", True))
+        self.set_results(("test_u", True))
         r = self.forge("red", "T001")
         self.assertTrue(any("acceptation" in p for p in r["problems"]))
 
     def test_ac_sans_test(self):
         self.write("tests/acceptance/test_a.py", "# rien\n")
-        self.set_junit(("test_x", True))
+        self.set_results(("test_x", True))
         r = self.forge("red", "T001")
         self.assertTrue(any("AC-1" in p for p in r["problems"]))
 
     def test_ac_sans_testcase_nomme(self):
         self.write("tests/acceptance/test_a.py", "# AC-1 dans le fichier seulement\n")
-        self.set_junit(("test_quelque_chose", True))
+        self.set_results(("test_quelque_chose", True))
         r = self.forge("red", "T001")
         self.assertFalse(r["ok"])
         self.assertEqual(r["ac_missing"], ["AC-1"])
@@ -158,7 +158,7 @@ class RedTest(ForgeCase):
 
     def test_ac_identifiants_normalises(self):
         for name in ("test_AC_01_x", "AC-1 comportement", "ac1"):
-            self.set_junit((name, True))
+            self.set_results((name, True))
             self.write("tests/acceptance/test_a.py", f"# {name}\n")
             self.assertTrue(self.forge("red", "T001")["ok"], name)
             self.forge("unblock", "T001")
@@ -174,14 +174,14 @@ class RedTest(ForgeCase):
         d.write_text(d.read_text() + "- AC-2 — autre\n")
         self.forge("approve", "T001")
         self.write("tests/acceptance/test_a.py", "# AC-1 AC-2\n")
-        self.set_junit(("test_ac_1", True), ("test_ac_2", False))
+        self.set_results(("test_ac_1", True), ("test_ac_2", False))
         r = self.forge("red", "T001")
         self.assertFalse(r["ok"])
         self.assertEqual(r["ac_missing"], ["AC-2"])
 
     def test_absence_de_progres_bloque(self):
         self.write("tests/acceptance/test_a.py", "# AC-1\n")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         # le premier tour ne compte pas : le blocage vient au deuxième tour identique
         self.assertFalse(self.forge("red", "T001")["blocked"])
         self.assertFalse(self.forge("red", "T001")["blocked"])
@@ -197,26 +197,26 @@ class GreenTest(ForgeCase):
 
     def test_vert(self):
         self.write("src/app.py", "x = 1\n")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertTrue(r["passed"], r)
         self.assertEqual(self.forge("status", "T001")["next"], "refactor")
 
     def test_ac_sans_testcase_au_vert(self):
-        self.set_junit(("test_autre", False))
+        self.set_results(("test_autre", False))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(r["passed"])
         self.assertEqual(r["ac_missing"], ["AC-1"])
 
     def test_rouge_encore(self):
-        self.set_junit(("test_ac_1", True))
+        self.set_results(("test_ac_1", True))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(r["passed"])
         self.assertFalse(r["blocked"])
 
     def test_modification_de_test_annulee(self):
         t = self.write("tests/unit/test_new.py")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(r["passed"])
         self.assertTrue(r["violations"])
@@ -224,7 +224,7 @@ class GreenTest(ForgeCase):
 
     def test_acceptation_modifiee(self):
         self.write("tests/acceptance/test_a.py", "# AC-1 truqué\n")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(r["passed"])
         self.assertTrue(r["violations"])
@@ -232,12 +232,12 @@ class GreenTest(ForgeCase):
 
     def test_config_protegee_annulee(self):
         f = self.write(".github/workflows/x.yml")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(f.exists())
 
     def test_absence_de_progres_puis_unblock(self):
-        self.set_junit(("test_ac_1", True))
+        self.set_results(("test_ac_1", True))
         self.forge("green", "T001", "--phase", "impl")
         self.assertFalse(self.forge("green", "T001", "--phase", "impl")["blocked"])
         self.assertTrue(self.forge("green", "T001", "--phase", "impl")["blocked"])
@@ -246,7 +246,7 @@ class GreenTest(ForgeCase):
 
     def test_marqueur_de_suppression_signale(self):
         self.write("src/app.py", "x = 1  # noqa\n")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         r = self.forge("green", "T001", "--phase", "impl")
         self.assertTrue(r["suppressions"])
 
@@ -256,7 +256,7 @@ class ReviewTest(ForgeCase):
         super().setUp()
         self.spec()
         self.to_red()
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         self.forge("green", "T001", "--phase", "impl")
         self.td = self.repo / ".forge/backlog/T001"
 
@@ -333,44 +333,115 @@ class PublishTest(ForgeCase):
         self.assertTrue(r["noop"])
 
 
-class JunitGlobTest(ForgeCase):
-    def test_junit_path_glob_plusieurs_fichiers(self):
+class ResultsTest(ForgeCase):
+    def setup_cfg(self, **changes):
         cfg = json.loads((self.repo / ".forge/config.json").read_text())
-        cfg["junit_path"] = ".forge/out/reports/TEST-*.xml"
-        (self.repo / ".forge/config.json").write_text(json.dumps(cfg))
-        script = self.tmp / "multi.py"
-        script.write_text("import pathlib\nd = pathlib.Path('.forge/out/reports'); d.mkdir(parents=True, exist_ok=True)\n"
-                          "(d / 'TEST-a.xml').write_text('<testsuite><testcase classname=\"c\" name=\"AC-1 a\"><failure/></testcase></testsuite>')\n"
-                          "(d / 'TEST-b.xml').write_text('<testsuite><testcase classname=\"c\" name=\"b\"/></testsuite>')\n"
-                          "raise SystemExit(1)\n")
-        cfg["test_cmd"] = f"python3 {script}"
+        cfg.update(changes)
         (self.repo / ".forge/config.json").write_text(json.dumps(cfg))
         from tests._forge import sh
         sh(["git", "commit", "-qam", "cfg"], self.repo)
         sh(["git", "push", "-q"], self.repo)
         self.spec()
         self.forge("start", "T001")
+        return cfg
+
+    def test_results_path_glob_plusieurs_fichiers(self):
+        script = self.tmp / "multi.py"
+        script.write_text("import json, pathlib\nd = pathlib.Path('.forge/out/reports'); d.mkdir(parents=True, exist_ok=True)\n"
+                          "(d / 'r-a.json').write_text(json.dumps({'cases': [{'name': 'AC-1 a', 'failed': True}]}))\n"
+                          "(d / 'r-b.json').write_text(json.dumps({'cases': [{'name': 'b', 'failed': False}]}))\n"
+                          "raise SystemExit(1)\n")
+        self.setup_cfg(results_path=".forge/out/reports/r-*.json", test_cmd=f"python3 {script}")
         self.write("tests/acceptance/test_a.py")
         r = self.forge("red", "T001")
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["tests"], {"total": 2, "failed": 1})
 
+    def test_acs_explicite_prioritaire_sur_le_nom(self):
+        self.setup_cfg()
+        self.write("tests/acceptance/test_a.py")
+        self.set_results(("test_ac_1", True, ["AC-2"]))
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["ac_missing"], ["AC-1"])
+
+    def test_acs_explicite_sans_id_dans_le_nom(self):
+        self.setup_cfg()
+        self.write("tests/acceptance/test_a.py")
+        self.set_results(("refuse un montant négatif", True, ["AC-1"]))
+        self.assertTrue(self.forge("red", "T001")["ok"])
+
+    def test_json_invalide_refuse_le_rouge(self):
+        self.setup_cfg()
+        self.write("tests/acceptance/test_a.py")
+        self.set_results_raw("pas du json")
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("inexploitables" in p for p in r["problems"]), r)
+
+    def test_schema_incomplet_refuse_le_rouge(self):
+        self.setup_cfg()
+        self.write("tests/acceptance/test_a.py")
+        self.set_results_raw(json.dumps({"cases": [{"name": "AC-1 a"}]}))
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("inexploitables" in p for p in r["problems"]), r)
+
+    def test_acceptance_globs_plusieurs_motifs(self):
+        self.setup_cfg(acceptance_globs=["tests/acceptance/*", "features/*.feature"],
+                       test_globs=["tests/*", "features/*"])
+        self.write("features/a.feature")
+        self.set_results(("AC-1 a", True))
+        r = self.forge("red", "T001")
+        self.assertTrue(r["ok"], r)
+        self.write("features/a.feature", "truqué\n")
+        self.set_results(("AC-1 a", False))
+        g = self.forge("green", "T001", "--phase", "impl")
+        self.assertFalse(g["passed"])
+        self.assertTrue(any("features/a.feature" in v for v in g["violations"]), g)
+        self.assertNotEqual((self.wt() / "features/a.feature").read_text(), "truqué\n")
+
+    def test_aucun_test_d_acceptation_selon_les_motifs(self):
+        self.setup_cfg(acceptance_globs=["features/*.feature"], test_globs=["tests/*", "features/*"])
+        self.write("tests/unit/test_u.py")
+        self.set_results(("AC-1 a", True))
+        r = self.forge("red", "T001")
+        self.assertFalse(r["ok"])
+        self.assertTrue(any("aucun test d'acceptation" in p for p in r["problems"]), r)
+
 
 class DoctorTest(ForgeCase):
     def checks(self):
-        r = self.forge("doctor", "--plugin-version", "0.2.0")
+        r = self.forge("doctor", "--plugin-version", "0.3.0")
         return r, {c["name"]: c["ok"] for c in r["checks"]}
 
     def test_remote_github_requis(self):
-        self.set_junit(("t", False))
+        self.set_results(("t", False))
         r, c = self.checks()
-        self.assertTrue(c["junit"] and c["config"] and c["gh"] and c["version"])
+        self.assertTrue(c["results"] and c["config"] and c["gh"] and c["version"])
         self.assertFalse(c["remote"])  # remote local de test
         self.assertFalse(r["ok"])
 
-    def test_junit_vide(self):
-        self.set_junit()
-        self.assertFalse(self.checks()[1]["junit"])
+    def test_results_vide(self):
+        self.set_results()
+        self.assertFalse(self.checks()[1]["results"])
+
+    def test_results_json_invalide(self):
+        self.set_results_raw("{")
+        self.assertFalse(self.checks()[1]["results"])
+
+    def test_sans_results_path_ni_acceptance_globs(self):
+        cfg = json.loads((self.repo / ".forge/config.json").read_text())
+        for k in ("results_path", "acceptance_globs"):
+            cfg.pop(k)
+        (self.repo / ".forge/config.json").write_text(json.dumps(cfg))
+        self.set_results(("t", False))
+        r = self.forge("doctor")
+        c = {x["name"]: x for x in r["checks"]}
+        self.assertFalse(c["config"]["ok"])
+        self.assertIn("acceptance_globs", c["config"]["detail"])
+        self.assertFalse(c["results"]["ok"])
+        self.assertIn("/tdd-forge:init", c["results"]["detail"])
 
     def test_version_differente(self):
         r = self.forge("doctor", "--plugin-version", "9.9.9")
@@ -382,7 +453,7 @@ class ShipTest(ForgeCase):
         self.spec()
         self.to_red()
         self.write("src/app.py")
-        self.set_junit(("test_ac_1", False))
+        self.set_results(("test_ac_1", False))
         self.assertTrue(self.forge("green", "T001", "--phase", "impl")["passed"])
         r = self.forge("ship", "T001")
         self.assertTrue(r["ok"], r)

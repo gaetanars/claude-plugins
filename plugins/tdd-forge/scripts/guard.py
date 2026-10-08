@@ -71,18 +71,20 @@ def main() -> None:
     wt = (proj / ".forge" / "worktrees" / task).resolve()
     cfg_file = wt / ".forge" / "config.json"
     cfg = json.loads(cfg_file.read_text()) if cfg_file.exists() else {}
-    acc = cfg.get("acceptance_dir", "tests/acceptance").strip("/")
     locked = json.loads((td / "state.json").read_text()).get("red_sha") if (td / "state.json").exists() else None
 
     in_td = p.is_relative_to(td)
     rel = str(p.relative_to(wt)).replace(os.sep, "/") if p.is_relative_to(wt) else None
     name = p.name
 
+    def matches(r: str, globs) -> bool:
+        return any(fnmatch.fnmatch(r, g) or fnmatch.fnmatch(r.rsplit("/", 1)[-1], g) for g in globs)
+
+    def is_acceptance(r: str) -> bool:
+        return matches(r, cfg.get("acceptance_globs", []))
+
     def is_test(r: str) -> bool:
-        if r.startswith(acc + "/"):
-            return True
-        return any(fnmatch.fnmatch(r, g) or fnmatch.fnmatch(r.rsplit("/", 1)[-1], g)
-                   for g in cfg.get("test_globs", []))
+        return is_acceptance(r) or matches(r, cfg.get("test_globs", []))
 
     if role == "runner":
         deny("le runner n'écrit aucun fichier")
@@ -104,7 +106,7 @@ def main() -> None:
         if rel and rel.startswith(PRODUCT_DOCS):
             deny("la connaissance produit (docs/product/) est hors de portée du rédacteur de tests")
         if rel and is_test(rel):
-            if locked and rel.startswith(acc + "/"):
+            if locked and is_acceptance(rel):
                 deny("le test d'acceptation est verrouillé depuis la phase rouge")
             sys.exit(0)
         deny("le rédacteur de tests n'écrit que des fichiers de test du worktree")

@@ -91,7 +91,7 @@ async function deliverTask(t) {
 
   if (todo('red')) {
     phase('Rouge')
-    let instr = 'Phase rouge : écris le test d\'acceptation (un testcase par AC-n, dont le NOM porte l\'identifiant AC-n) puis les tests unitaires du plan. Ils doivent échouer pour la bonne raison.'
+    let instr = 'Phase rouge : écris le test d\'acceptation (un cas par AC-n, lié à son AC de façon visible dans les résultats de test) puis les autres tests prévus au plan. Ils doivent échouer pour la bonne raison.'
     for (;;) {
       if (!await work('test-writer', t, `${t} · tests rouges`, instr)) return stopped
       const r = await forge(`red ${t}`, `${t} · contrôle rouge`)
@@ -104,7 +104,7 @@ async function deliverTask(t) {
 
   if (todo('green')) {
     phase('Vert')
-    const g = await greenLoop(t, 'impl', 'Phase verte : écris le code minimal qui fait passer tous les tests et les portes. Chaque AC-n doit avoir un testcase au vert dans le rapport JUnit.')
+    const g = await greenLoop(t, 'impl', 'Phase verte : écris le code minimal qui fait passer tous les tests et les portes. Chaque AC-n doit apparaître dans les résultats de test, au vert.')
     if (!g.passed) return await block(t, g.error || 'Implémentation sans progrès', g)
   }
 
