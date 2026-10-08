@@ -2,32 +2,34 @@
 
 Livraison autonome en TDD avec Claude Code, sur GitHub, **indépendante de la stack** : le plugin porte le flux, le projet porte la technique (lanceur, framework, dossiers, types de tests, couverture, style).
 
-> **Statut : v0.3, expérimental.** Le moteur (`forge.py`) et le hook (`guard.py`) sont couverts par des tests, mais la chaîne n'a pas encore tourné de bout en bout dans Claude Code. Lis [« À vérifier au premier lancement »](#à-vérifier-au-premier-lancement) avant de l'utiliser sur un dépôt qui compte. Il pousse des branches, ouvre des PR et peut les fusionner : essaie-le d'abord sur un dépôt jetable.
+> **Statut : v0.4, expérimental.** Le moteur (`forge.py`) et le hook (`guard.py`) sont couverts par des tests, mais la chaîne n'a pas encore tourné de bout en bout dans Claude Code. Lis [« À vérifier au premier lancement »](#à-vérifier-au-premier-lancement) avant de l'utiliser sur un dépôt qui compte. Il pousse des branches, ouvre des PR et peut les fusionner : essaie-le d'abord sur un dépôt jetable.
 
-Trois commandes :
+Quatre commandes :
 
 | Commande | Rôle |
 |---|---|
-| `/tdd-forge:init` | Installe tout et initialise le PO : entretien de vision, stack, squelette sur dépôt vide, portes, CI, protection de `main`, PR `chore/tdd-forge`. Idempotent : sert aussi à la mise à jour. |
+| `/tdd-forge:init` | Installe tout et mène le cadrage à deux voix (PO et architecte) : vision, qualités, stack, ADR, *walking skeleton* sur dépôt neuf ou rétro-documentation sur dépôt existant, portes, CI, protection de `main`, PR `chore/tdd-forge`. Idempotent : sert aussi à la mise à jour. |
 | `/tdd-forge:po <besoin>` | Point d'entrée unique : triage, challenge, découpage, specs, accord, publication de la connaissance produit, lancement de la livraison. |
+| `/tdd-forge:architect <sujet>` | Fait évoluer l'architecture : nouvelle ADR qui en remplace une autre (jamais de réécriture), publiée par PR. Le code à changer passe ensuite par le PO. |
 | `/tdd-forge:retro` | Améliore le système (plugin, conventions du projet, portes) à partir des journaux, revues et consommations. |
 
-Tu ne parles qu'au Product Owner. Il cadre et challenge ; tu donnes ton accord sur les critères d'acceptation. Ensuite la boucle tourne seule : plan, tests rouges, vert, refactor, revue indépendante, apprentissages, PR, merge si la CI est verte.
+Tu parles au Product Owner (le quoi) et, pour le comment d'ensemble, à l'architecte, que le PO consulte quand un besoin touche l'architecture. Le PO cadre et challenge ; tu donnes ton accord sur les critères d'acceptation. Ensuite la boucle tourne seule : plan, tests rouges, vert, refactor, revue indépendante, apprentissages, PR, merge si la CI est verte.
 
 ## Le parcours
 
 ```
 /tdd-forge:po <besoin>            ← toi + PO (Opus)
   triage      forge.py backlog          bloquées, en cours, CI rouges
-  challenge   PRODUCT.md, decisions.md, specs livrées, learnings
+  challenge   PRODUCT.md, ARCHITECTURE.md (ADR), decisions.md, specs livrées, learnings
+              impact d'architecture → consultation de l'architecte (Opus), ADR proposée
   specs       .forge/backlog/T001/spec.md
   accord      AskUserQuestion → forge.py approve   empreinte sha256 de la spec
-  publication forge.py publish          PRODUCT.md + docs/product/ par PR séparée
+  publication forge.py publish          PRODUCT.md, docs/product/, ARCHITECTURE.md, docs/architecture/ par PR séparée
         │  « go »
         ▼
 workflow tdd-forge:deliver        ← autonome, une tâche après l'autre
   Préparation   forge.py start          worktree .forge/worktrees/T001, spec figée commitée
-  Plan          planner (Opus)          plan.md
+  Plan          planner (Opus)          plan.md (suit les ADR ; ÉCART-ADR ou DÉPASSEMENT → forge.py plan-check)
   Rouge         test-writer (Sonnet)    tests d'acceptation (un cas par AC-n) + autres tests du plan
                 forge.py red            chaque AC-n a un cas en échec dans les résultats
   Vert          implementer (Sonnet) ⇄ forge.py green   chaque AC-n a un cas au vert
@@ -56,8 +58,9 @@ Si le lanceur n'écrit pas ce format, la commande de test s'en charge ou `init` 
 
 | Élément | Modèle | Peut écrire | Rôle |
 |---|---|---|---|
-| skill `po` | Opus | specs, `PRODUCT.md`, `docs/product/` | Product Owner, ton seul interlocuteur |
-| `planner` | Opus, medium | `plan.md` | plan de tests et d'implémentation |
+| skill `po` | Opus | specs, `PRODUCT.md`, `docs/product/` | Product Owner : quoi et pourquoi |
+| skill `architect` | Opus | `ARCHITECTURE.md`, `docs/architecture/adr/`, squelette | Architecte : stack, structure, outillage de test, ADR, portes d'architecture ; dialogue avec toi, donc dans la conversation |
+| `planner` | Opus, medium | `plan.md` | planificateur technique : plan de tests et d'implémentation, dans le cadre des ADR |
 | `test-writer` | Sonnet, medium | fichiers de test (acceptation verrouillée après le rouge) | tests rouges, tests issus de la revue |
 | `implementer` | Sonnet, medium | code applicatif uniquement | vert, refactor, corrections de revue |
 | `reviewer` | Opus, medium | `review-n.json` | revue indépendante après les portes automatiques |
@@ -68,12 +71,13 @@ Si le lanceur n'écrit pas ce format, la commande de test s'en charge ou `init` 
 ## Les garde-fous, par couche
 
 1. **Accord figé** : `forge.py approve` enregistre l'empreinte sha256 de la spec ; `status` refuse toute spec non approuvée ou modifiée depuis. `approve` et `publish` sont interdits à tous les sous-agents.
-2. **Hook `guard.py`** (PreToolUse) : chaque agent n'écrit que dans son périmètre (`docs/product/` hors de portée de l'implémenteur et du rédacteur de tests) ; `git` en écriture et `gh` sont interdits aux agents ; le runner n'exécute que `forge.py`.
+2. **Hook `guard.py`** (PreToolUse) : chaque agent n'écrit que dans son périmètre (`PRODUCT.md`, `ARCHITECTURE.md`, `docs/product/` et `docs/architecture/` hors de portée de l'implémenteur et du rédacteur de tests) ; `git` en écriture et `gh` sont interdits aux agents ; le runner n'exécute que `forge.py`.
 3. **Contrôles de `forge.py`** : toute modification de test ou de config par l'implémenteur est annulée et comptée comme violation ; l'empreinte du test d'acceptation est vérifiée ; la phase rouge exige un échec par AC.
-4. **Portes du projet** (déterministes) avant toute revue LLM.
-5. **CI GitHub** qui rejoue les mêmes portes, et protection de `main`.
-6. **Merge automatique conditionné** à la CI verte. Sans CI, pas de merge.
-7. **Arrêt sur absence de progrès** : deux tours sans amélioration → PR en brouillon avec le motif, chaîne arrêtée. Le PO trie les blocages en début de session.
+4. **ADR** : le planificateur suit les ADR acceptées et signale `ÉCART-ADR NNNN` sinon ; `forge.py plan-check` (lecture seule) arrête alors la tâche, comme un `DÉPASSEMENT` ; le relecteur traite une violation d'ADR comme `bloquant`. Une ADR acceptée ne change que par une nouvelle ADR.
+5. **Portes du projet** (déterministes) avant toute revue LLM.
+6. **CI GitHub** qui rejoue les mêmes portes, et protection de `main`.
+7. **Merge automatique conditionné** à la CI verte. Sans CI, pas de merge.
+8. **Arrêt sur absence de progrès** : deux tours sans amélioration → PR en brouillon avec le motif, chaîne arrêtée. Le PO trie les blocages en début de session.
 
 ## Installation
 
@@ -84,12 +88,13 @@ Prérequis : Claude Code 2.1.271 ou plus, `git`, `gh` authentifié, `python3` 3.
    /plugin marketplace add gaetanars/claude-plugins
    /plugin install tdd-forge@gaetanars
    ```
-2. Dans chaque projet : `/tdd-forge:init`. Sur un dépôt vide il mène l'entretien de vision, propose librement une stack (tu tranches) et crée un squelette minimal avec un test de fumée.
+2. Dans chaque projet : `/tdd-forge:init`. Sur un dépôt neuf, le PO mène l'entretien de vision, puis l'architecte propose la stack avec options, contradicteur et ADR (tu tranches) et pose un *walking skeleton* de bout en bout ; sur un dépôt existant il documente l'architecture sans rien restructurer.
 
 Réglages conseillés dans ton `~/.claude/settings.json` : `"autoContinueAtUsageLimit": true`. Empêche la mise en veille pendant une livraison (macOS : `caffeinate -i`).
 
 ## Usage
 
+- **Faire évoluer l'architecture** : `/tdd-forge:architect <sujet>`.
 - **Nouveau besoin** : `/tdd-forge:po <ce que tu veux>`. Réponds au bloc de specs, puis « go ».
 - **Suivre** : `/workflows`, ou les PR sur GitHub depuis ton téléphone.
 - **Reprendre après une interruption** : relance le workflow avec les mêmes tâches (`/tdd-forge:deliver` avec `{ "tasks": ["T001"] }`). Chaque tâche repart de sa dernière étape validée, même dans une nouvelle session.
@@ -101,6 +106,8 @@ Réglages conseillés dans ton `~/.claude/settings.json` : `"autoContinueAtUsage
 
 ```
 PRODUCT.md                       vision produit (amendée avec ton accord)          versionné
+ARCHITECTURE.md                  qualités, stack, structure, index des ADR         versionné
+docs/architecture/adr/           ADR (alternatives rejetées, réexamen, règle)      versionné
 docs/product/decisions.md        journal des décisions client/PO                   versionné
 docs/product/specs/T001.md       spec figée, commitée dans la PR de sa tâche       versionné
 .forge/config.json               portes et paramètres                              versionné
@@ -128,7 +135,9 @@ Ces points reposent sur la documentation de Claude Code, pas sur une exécution 
 - **`SubagentStop` sur les agents de workflow** : `.forge/metrics.jsonl` doit se remplir pendant une livraison.
 - **Forme de la règle `Workflow(tdd-forge:deliver)`** dans les permissions : si une demande d'autorisation apparaît au lancement, accepte « always ».
 - **Lancement du workflow depuis la skill `po`** : sinon, le PO donne la commande `/tdd-forge:deliver`.
-- **`AskUserQuestion` dans une skill** (`po`, `init`, `retro`) : sinon, l'accord se demande en texte (« ok » / « ok sauf n »), sans changer le parcours.
+- **Chargement d'une skill par une autre** (`Skill` depuis `init` et `po` vers `architect`) et `allowed-tools` effectifs de ces skills. À défaut, `init` et `po` lisent `../architect/SKILL.md`, comme ils lisent déjà `../po/templates`.
+- **ADR publiée après le démarrage d'une tâche** : le worktree part de l'état de `main` à `start` ; après un `ÉCART-ADR`, vérifie que l'ADR remplaçante figure dans le worktree (sinon redémarre la tâche sur une base à jour).
+- **`AskUserQuestion` dans une skill** (`po`, `init`, `architect`, `retro`) : sinon, l'accord se demande en texte (« ok » / « ok sauf n »), sans changer le parcours.
 - `claude plugin validate --strict plugins/tdd-forge` avant la première installation.
 
 Fais une première livraison sur une tâche minuscule, en restant devant l'écran. Un dépôt jetable avec un simple script qui écrit `results.json` prouve qu'aucune techno n'est présupposée.

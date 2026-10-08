@@ -5,7 +5,7 @@ description: Invariants du flux tdd-forge (rouge d'abord, tests d'acceptation ve
 
 # Conventions
 
-**Lecture obligatoire** : `.forge/conventions.md` du projet, à lire et appliquer : il définit la méthodologie de test et de code (stratégie de test, style, commandes, pièges). À défaut, ou pour ce qu'il ne couvre pas, suis les conventions visibles dans le dépôt.
+**Lecture obligatoire** : `.forge/conventions.md` du projet, à lire et appliquer, ainsi que l'index d'ADR de `ARCHITECTURE.md` : il définit la méthodologie de test et de code (stratégie de test, style, commandes, pièges). À défaut, ou pour ce qu'il ne couvre pas, suis les conventions visibles dans le dépôt.
 
 ## Invariants du flux
 
@@ -13,5 +13,6 @@ description: Invariants du flux tdd-forge (rouge d'abord, tests d'acceptation ve
 - Chaque critère `AC-n` est lié à au moins un test, de façon visible dans les résultats de test (comme le décrit `.forge/conventions.md`), pas seulement dans un commentaire.
 - Les tests d'acceptation sont verrouillés après la phase rouge.
 - Le rédacteur de tests n'écrit que des tests ; l'implémenteur n'en écrit ni n'en modifie jamais.
+- Une ADR acceptée se respecte et ne change que par une nouvelle ADR, via l'architecte.
 - Les résultats sont déterministes : un test qui change d'issue sans changement de code est un défaut.
 - Aucune suppression d'alerte sans motif écrit sur la même ligne ; aucun secret dans le code ni les tests.

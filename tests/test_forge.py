@@ -202,6 +202,17 @@ class GreenTest(ForgeCase):
         self.assertTrue(r["passed"], r)
         self.assertEqual(self.forge("status", "T001")["next"], "refactor")
 
+    def test_modif_architecture_annulee_au_vert(self):
+        self.write("src/app.py", "x = 1\n")
+        self.write("ARCHITECTURE.md", "# détourné\n")
+        self.write("docs/architecture/adr/0001-x.md", "# détourné\n")
+        self.write("PRODUCT.md", "# détourné\n")
+        self.set_results(("test_ac_1", False))
+        r = self.forge("green", "T001", "--phase", "impl")
+        self.assertFalse(r["passed"], r)
+        for rel in ("ARCHITECTURE.md", "docs/architecture/adr/0001-x.md", "PRODUCT.md"):
+            self.assertFalse((self.wt() / rel).exists(), rel)
+
     def test_ac_sans_testcase_au_vert(self):
         self.set_results(("test_autre", False))
         r = self.forge("green", "T001", "--phase", "impl")
@@ -328,6 +339,14 @@ class PublishTest(ForgeCase):
         self.assertIn("error", self.forge("publish", "m", "src.py"))
         self.assertIn("error", self.forge("publish", "m", "../x"))
 
+    def test_publie_architecture(self):
+        (self.repo / "ARCHITECTURE.md").write_text("# Architecture\n")
+        (self.repo / "docs/architecture/adr").mkdir(parents=True)
+        (self.repo / "docs/architecture/adr/0001-x.md").write_text("# ADR\n")
+        r = self.forge("publish", "docs: architecture", "ARCHITECTURE.md", "docs/architecture")
+        self.assertTrue(r.get("ok"), r)
+        self.assertIn("docs/architecture/adr/0001-x.md", r["files"])
+
     def test_rien_a_publier(self):
         r = self.forge("publish", "m", ".forge/config.json")
         self.assertTrue(r["noop"])
@@ -410,9 +429,40 @@ class ResultsTest(ForgeCase):
         self.assertTrue(any("aucun test d'acceptation" in p for p in r["problems"]), r)
 
 
+class PlanCheckTest(ForgeCase):
+    def check(self, text):
+        d = self.spec()
+        (d / "plan.md").write_text(text)
+        return self.forge("plan-check", "T001")
+
+    def test_plan_normal(self):
+        r = self.check("# Plan\n\n1. Compréhension\n")
+        self.assertEqual((r["ok"], r["blocked"]), (True, False))
+
+    def test_depassement(self):
+        r = self.check("DÉPASSEMENT\nredécouper en deux\n")
+        self.assertTrue(r["blocked"])
+        self.assertIn("DÉPASSEMENT", r["reason"])
+
+    def test_ecart_adr(self):
+        r = self.check("ÉCART-ADR 0003 : la tâche exige un second service\n")
+        self.assertTrue(r["blocked"])
+        self.assertIn("0003", r["reason"])
+
+    def test_sans_plan(self):
+        self.spec()
+        self.assertFalse(self.forge("plan-check", "T001")["blocked"])
+
+    def test_unblock_retire_le_plan_d_arret(self):
+        self.check("ÉCART-ADR 0003 : motif\n")
+        self.forge("start", "T001")
+        self.assertTrue(self.forge("unblock", "T001")["ok"])
+        self.assertEqual(self.forge("status", "T001")["next"], "plan")
+
+
 class DoctorTest(ForgeCase):
     def checks(self):
-        r = self.forge("doctor", "--plugin-version", "0.3.0")
+        r = self.forge("doctor", "--plugin-version", "0.4.0")
         return r, {c["name"]: c["ok"] for c in r["checks"]}
 
     def test_remote_github_requis(self):
@@ -442,6 +492,12 @@ class DoctorTest(ForgeCase):
         self.assertIn("acceptance_globs", c["config"]["detail"])
         self.assertFalse(c["results"]["ok"])
         self.assertIn("/tdd-forge:init", c["results"]["detail"])
+
+    def test_architecture_requise(self):
+        self.set_results(("t", False))
+        self.assertFalse(self.checks()[1]["architecture"])
+        (self.repo / "ARCHITECTURE.md").write_text("# Architecture\n")
+        self.assertTrue(self.checks()[1]["architecture"])
 
     def test_version_differente(self):
         r = self.forge("doctor", "--plugin-version", "9.9.9")

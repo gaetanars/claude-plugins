@@ -22,7 +22,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 TAIL = 3000
 DISPO = {"corrigé": "corrigé", "corrige": "corrigé", "refusé": "refusé", "refuse": "refusé",
          "reporté": "reporté", "reporte": "reporté"}
@@ -121,7 +121,8 @@ def is_test(rel: str, cfg) -> bool:
 def is_protected(rel: str) -> bool:
     if rel == ".forge/learnings.md":
         return False
-    return rel.startswith((".forge/", ".github/", ".claude/", "docs/product/"))
+    return rel in ("PRODUCT.md", "ARCHITECTURE.md") or rel.startswith(
+        (".forge/", ".github/", ".claude/", "docs/product/", "docs/architecture/"))
 
 
 def changed_paths(wt: Path) -> list[str]:
@@ -324,6 +325,9 @@ def diff_info(ctx: Ctx, base: str) -> dict:
 
 
 # ---------------------------------------------------------------- commandes
+
+PLAN_STOPS = ("DÉPASSEMENT", "ÉCART-ADR")
+
 
 def cmd_status(ctx: Ctx) -> dict:
     meta, acs, deps = read_spec(ctx)
@@ -664,8 +668,18 @@ def cmd_mark(ctx: Ctx, key: str) -> dict:
     return {"ok": True}
 
 
+def cmd_plan_check(ctx: Ctx) -> dict:
+    """Lecture seule : le plan porte-t-il un marqueur d'arrêt en première ligne (DÉPASSEMENT, ÉCART-ADR) ?"""
+    plan = ctx.td / "plan.md"
+    first = plan.read_text(encoding="utf-8").lstrip().split("\n", 1)[0].strip() if plan.exists() else ""
+    marker = next((m for m in PLAN_STOPS if first.lstrip("#*> `").startswith(m)), None)
+    return {"ok": True, "blocked": bool(marker), "reason": first[:300] if marker else None}
+
+
 def cmd_unblock(ctx: Ctx) -> dict:
     """Reprise manuelle après un blocage : Gaëtan a corrigé ou clarifié, la boucle repart de l'étape en cours."""
+    if cmd_plan_check(ctx)["blocked"]:
+        (ctx.td / "plan.md").unlink()  # plan d'arrêt périmé : le planificateur le réécrit
     st = ctx.state()
     st.update(status="running", blocked_reason=None, progress={})
     for k in [k for k in st if k.startswith("stall_")]:
@@ -831,7 +845,7 @@ def cmd_wait_merge(ctx: Ctx, max_seconds: int) -> dict:
         time.sleep(30)
 
 
-PUBLISHABLE = ("PRODUCT.md", "docs/product/", ".forge/conventions.md", ".forge/learnings.md", ".forge/config.json")
+PUBLISHABLE = ("PRODUCT.md", "docs/product/", "ARCHITECTURE.md", "docs/architecture/", ".forge/conventions.md", ".forge/learnings.md", ".forge/config.json")
 
 
 def cmd_publish(ctx: Ctx, message: str, paths: list[str], manual: bool) -> dict:
@@ -913,6 +927,9 @@ def cmd_doctor(ctx: Ctx, plugin_version: str | None) -> dict:
     url = run(["git", "remote", "get-url", cfg.get("remote", "origin")], root)
     check("remote", url.returncode == 0 and "github.com" in url.stdout, url.stdout.strip() or "remote absent")
     check("gh", _gh(["auth", "status"], root).returncode == 0, "gh authentifié")
+    check("architecture", (root / "ARCHITECTURE.md").is_file(),
+          "ARCHITECTURE.md présent" if (root / "ARCHITECTURE.md").is_file()
+          else "ARCHITECTURE.md absent : lance /tdd-forge:init (cadrage ou rétro-documentation de l'architecture)")
     if plugin_version:
         check("version", plugin_version == VERSION, f"moteur {VERSION}, plugin {plugin_version}"
               + ("" if plugin_version == VERSION else " : relance /tdd-forge:init pour mettre à jour"))
@@ -933,7 +950,7 @@ def cmd_gate() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(prog="forge.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("status", "start", "red", "tests-update", "context", "metrics", "unblock"):
+    for name in ("status", "start", "red", "tests-update", "context", "metrics", "unblock", "plan-check"):
         sub.add_parser(name).add_argument("task")
     p = sub.add_parser("green")
     p.add_argument("task")
@@ -987,6 +1004,7 @@ def main() -> int:
             "mark": lambda: cmd_mark(ctx, a.key),
             "context": lambda: cmd_context(ctx),
             "unblock": lambda: cmd_unblock(ctx),
+            "plan-check": lambda: cmd_plan_check(ctx),
             "metrics": lambda: metrics(ctx),
             "ship": lambda: cmd_ship(ctx, a.blocked),
             "wait-merge": lambda: cmd_wait_merge(ctx, a.max_seconds),
