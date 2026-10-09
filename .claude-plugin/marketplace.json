@@ -1,15 +1,15 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "gaetanars",
-  "description": "Plugins Claude Code de Gaëtan Ars : livraison autonome en TDD, outils DevOps.",
+  "description": "Plugins Claude Code de Gaëtan Ars : cadrage par le contexte et garde-fous légers pour Claude Code.",
   "owner": { "name": "Gaëtan Ars", "url": "https://github.com/gaetanars" },
   "plugins": [
     {
-      "name": "tdd-forge",
-      "source": "./plugins/tdd-forge",
-      "description": "Livraison autonome en TDD : un PO qui cadre et challenge, puis plan, tests rouges, vert, refactor, revue, apprentissages, PR et merge si CI verte.",
+      "name": "cadre",
+      "source": "./plugins/cadre",
+      "description": "Cadrage par le contexte : PRODUCT.md, ARCHITECTURE.md, specs à critères d'acceptation validés, tests d'acceptation verrouillés et commande check à l'arrêt. Merge humain.",
       "category": "development",
-      "keywords": ["tdd", "workflow", "multi-language", "github"]
+      "keywords": ["context", "tdd", "architecture", "python", "typescript"]
     }
   ]
 }
