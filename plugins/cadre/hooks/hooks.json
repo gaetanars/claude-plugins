@@ -1,0 +1,20 @@
+{
+  "description": "cadre : verrou des tests d'acceptation commités, porte check à l'arrêt.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/acceptance_lock.py\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/check_gate.py\"", "timeout": 900 }
+        ]
+      }
+    ]
+  }
+}

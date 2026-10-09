@@ -1,0 +1,10 @@
+{
+  "name": "cadre",
+  "version": "0.1.0",
+  "description": "Cadrage par le contexte et garde-fous légers : PRODUCT.md, ARCHITECTURE.md, specs à critères d'acceptation validés, tests d'acceptation verrouillés, commande check à l'arrêt.",
+  "author": { "name": "Gaëtan Ars" },
+  "homepage": "https://github.com/gaetanars/claude-plugins/tree/main/plugins/cadre",
+  "repository": "https://github.com/gaetanars/claude-plugins",
+  "license": "MIT",
+  "keywords": ["context", "tdd", "architecture", "python", "typescript"]
+}

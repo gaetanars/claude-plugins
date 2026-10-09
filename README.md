@@ -6,7 +6,7 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 | Plugin | Version | Description |
 |---|---|---|
-| [`tdd-forge`](plugins/tdd-forge/README.md) | 0.1.1 | Livraison autonome en TDD (Python, TypeScript, GitHub) : PO, plan, tests rouges, vert, refactor, revue, PR et merge si CI verte. Expérimental. |
+| [`cadre`](plugins/cadre/README.md) | 0.1.0 | Cadrage par le contexte (Python, TypeScript, GitHub) : PRODUCT.md, ARCHITECTURE.md, specs validées, tests d'acceptation verrouillés, commande `check` à l'arrêt. Expérimental. |
 
 ## Installation
 
@@ -14,10 +14,12 @@ Dans Claude Code :
 
 ```
 /plugin marketplace add gaetanars/claude-plugins
-/plugin install tdd-forge@gaetanars
+/plugin install cadre@gaetanars
 ```
 
-Équivalent en ligne de commande : `claude plugin marketplace add gaetanars/claude-plugins` puis `claude plugin install tdd-forge@gaetanars`.
+Équivalent en ligne de commande : `claude plugin marketplace add gaetanars/claude-plugins` puis `claude plugin install cadre@gaetanars`.
+
+> **Retrait de `tdd-forge`** : le plugin est remplacé par `cadre` (historique git conservé). `claude plugin uninstall tdd-forge@gaetanars` avant d'installer `cadre`.
 
 > **Migration** : la marketplace s'appelait `tdd-forge` (dépôt `gaetanars/tdd-forge`). Retire l'ancienne (`claude plugin marketplace remove tdd-forge`) puis réinstalle avec les commandes ci-dessus.
 
@@ -27,7 +29,7 @@ L'auto-update est désactivé par défaut pour une marketplace tierce :
 
 ```
 claude plugin marketplace update gaetanars
-claude plugin update tdd-forge@gaetanars
+claude plugin update cadre@gaetanars
 ```
 
 ## Structure
