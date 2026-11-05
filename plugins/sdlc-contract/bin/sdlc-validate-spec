@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """sdlc-validate-spec <docs/features/<id>> — valide un cadrage avant publication.
 
-Contrôles : fichiers présents, frontmatter, sections obligatoires, critères d'acceptation
-testables, aucun marqueur d'incomplétude, aucune question ouverte dans ambiguities.md.
-Sortie : 0 = valide ; 1 = erreurs listées sur stderr.
+Contrôles : spec.md présent (brief.md facultatif, validé s'il existe), frontmatter, sections obligatoires,
+critères d'acceptation testables, aucun marqueur d'incomplétude, aucune question ouverte dans
+« Décisions de cadrage ».
+Sortie : 0 = valide ; 1 = erreurs listées sur stderr ; 2 = usage.
 """
 import re
 import sys
 from pathlib import Path
 
-SUPPORTED_SCHEMA = {"1"}
+SUPPORTED_SCHEMA = {"2"}
 ID_RE = re.compile(r"^\d{4}-[a-z0-9]+(-[a-z0-9]+)*$")
-SECTIONS = ["Contexte", "Périmètre", "Hors périmètre", "Critères d'acceptation", "Contraintes"]
+SECTIONS = ["Contexte", "Périmètre", "Hors périmètre", "Critères d'acceptation", "Contraintes", "Décisions de cadrage"]
 BRIEF_SECTIONS = ["Problème", "Valeur"]
 PLACEHOLDERS = re.compile(r"\b(TODO|TBD|FIXME|NNNN)\b|\?\?\?|à définir|a definir", re.I)
 FENCE = re.compile(r"^```.*?^```", re.S | re.M)
@@ -50,15 +51,11 @@ def sections(body):
 
 def validate(fdir: Path):
     errs = []
-    files = {}
-    for name in ("brief", "spec", "ambiguities"):
-        p = fdir / f"{name}.md"
-        if not p.is_file():
-            errs.append(f"{name}.md manquant")
-        else:
-            files[name] = p.read_text(encoding="utf-8")
-    if errs:
-        return errs
+    if not (fdir / "spec.md").is_file():
+        return ["spec.md manquant"]
+    files = {"spec": (fdir / "spec.md").read_text(encoding="utf-8")}
+    if (fdir / "brief.md").is_file():
+        files["brief"] = (fdir / "brief.md").read_text(encoding="utf-8")
 
     for name, text in files.items():
         fm, _ = parse_frontmatter(text)
@@ -106,31 +103,26 @@ def validate(fdir: Path):
             errs.append(f"spec.md : {i} trop vague (« {text.strip()} »)")
     if not re.search(r"^\s*[-*] \S", secs.get("Hors périmètre", ""), re.M):
         errs.append("spec.md : « Hors périmètre » doit lister au moins un élément")
+    for line in secs.get("Décisions de cadrage", "").splitlines():
+        if re.match(r"\s*- \[ \]", line) or re.search(r"\bOUVERTE?\b", line):
+            errs.append(f"spec.md : question ouverte dans « Décisions de cadrage » : {line.strip()[:80]!r}")
 
-    # brief
-    _, bbody = parse_frontmatter(files["brief"])
-    bsecs = sections(bbody)
-    for s in BRIEF_SECTIONS:
-        if len(bsecs.get(s, "")) < 10:
-            errs.append(f"brief.md : section « {s} » manquante ou vide")
+    # brief (facultatif)
+    if "brief" in files:
+        _, bbody = parse_frontmatter(files["brief"])
+        bsecs = sections(bbody)
+        for s in BRIEF_SECTIONS:
+            if len(bsecs.get(s, "")) < 10:
+                errs.append(f"brief.md : section « {s} » manquante ou vide")
 
     # marqueurs d'incomplétude
-    for name in ("brief", "spec"):
-        text = FENCE.sub("", files[name])
-        for n, line in enumerate(text.splitlines(), 1):
+    for name, text in files.items():
+        for line in FENCE.sub("", text).splitlines():
             if PLACEHOLDERS.search(line):
                 errs.append(f"{name}.md : marqueur d'incomplétude : {line.strip()[:80]!r}")
                 break
     if re.search(r"^# .*(Titre court)", files["spec"], re.M):
         errs.append("spec.md : titre encore au format gabarit")
-
-    # ambiguïtés
-    amb = files["ambiguities"]
-    for n, line in enumerate(amb.splitlines(), 1):
-        if re.match(r"\s*- \[ \]", line):
-            errs.append(f"ambiguities.md:{n} : question ouverte : {line.strip()[:80]!r}")
-        if re.search(r"\bOUVERT(E)?\b", line):
-            errs.append(f"ambiguities.md:{n} : marqueur OUVERT")
     return errs
 
 

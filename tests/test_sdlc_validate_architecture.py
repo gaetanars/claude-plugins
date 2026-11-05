@@ -1,4 +1,3 @@
-import json
 import subprocess
 import sys
 import tempfile
@@ -8,7 +7,7 @@ from pathlib import Path
 VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc-contract/bin/sdlc-validate-architecture"
 
 ARCH_MD = """---
-schema_version: 1
+schema_version: 2
 status: {status}
 updated: 2026-11-05
 ---
@@ -38,20 +37,11 @@ Langage unique, aucune dépendance runtime majeure.
 Outil natif : `archtool`. Configuration : docs/architecture/native/archtool.cfg.
 """
 
-RULES = {
-    "schema_version": 1,
-    "modules": [{"name": "domain", "paths": ["src/domain/**"]}, {"name": "app", "paths": ["src/app/**"]}],
-    "allowed_dependencies": {"domain": [], "app": ["domain"]},
-    "native": {"tool": "archtool", "config": "docs/architecture/native/archtool.cfg"},
-}
-
-
-def write_architecture(root, status="accepted", rules=None, md=None):
+def write_architecture(root, status="accepted", md=None):
     """Crée un cadrage d'architecture valide sous <root>/docs/architecture (fixture partagée avec les autres tests SDLC)."""
     a = Path(root) / "docs" / "architecture"
     (a / "native").mkdir(parents=True, exist_ok=True)
     (a / "ARCHITECTURE.md").write_text(md if md is not None else ARCH_MD.format(status=status), encoding="utf-8")
-    (a / "rules.json").write_text(json.dumps(rules if rules is not None else RULES, indent=2), encoding="utf-8")
     (a / "native" / "archtool.cfg").write_text("# config native\n", encoding="utf-8")
     return a
 
@@ -65,11 +55,6 @@ class ValidateArchitecture(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         write_architecture(self.root)
-
-    def rules(self, **patch):
-        r = json.loads(json.dumps(RULES))
-        r.update(patch)
-        write_architecture(self.root, rules=r)
 
     def fails(self, fragment, *flags):
         r = validate(self.root, *flags)
@@ -95,7 +80,7 @@ class ValidateArchitecture(unittest.TestCase):
 
     def test_frontmatter_errors(self):
         md = ARCH_MD.format(status="accepted")
-        write_architecture(self.root, md=md.replace("schema_version: 1", "schema_version: 9"))
+        write_architecture(self.root, md=md.replace("schema_version: 2", "schema_version: 1"))
         self.fails("schema_version")
         write_architecture(self.root, md=md.replace("status: accepted", "status: ok"))
         self.fails("status doit être")
@@ -115,43 +100,18 @@ class ValidateArchitecture(unittest.TestCase):
         write_architecture(self.root, md=ARCH_MD.format(status="accepted").replace("Petit service", "TODO service"))
         self.fails("marqueur d'incomplétude")
 
-    def test_rules_errors(self):
-        self.rules(modules=[{"name": "domain", "paths": ["a"]}, {"name": "domain", "paths": ["b"]}])
-        self.fails("module dupliqué")
-        self.rules(modules=[{"name": "domain", "paths": []}, {"name": "app", "paths": ["a"]}])
-        self.fails("paths doit être")
-        self.rules(allowed_dependencies={"domain": [], "app": ["ghost"]})
-        self.fails("module inconnu 'ghost'")
-        self.rules(allowed_dependencies={"domain": []})
-        self.fails("sans entrée pour 'app'")
-        self.rules(allowed_dependencies={"domain": ["domain"], "app": []})
-        self.fails("dépend de lui-même")
-        self.rules(allowed_dependencies={"domain": ["app"], "app": ["domain"]})
-        self.fails("cycle")
-        self.rules(schema_version=2)
-        self.fails("schema_version")
+    def test_native_config_must_be_cited_and_exist(self):
+        md = ARCH_MD.format(status="accepted")
+        write_architecture(self.root, md=md.replace("Configuration : docs/architecture/native/archtool.cfg.", "Configuration : pyproject.toml."))
+        self.fails("doit citer la configuration")
+        write_architecture(self.root, md=md.replace("archtool.cfg", "absent.cfg"))
+        self.fails("configuration native introuvable : docs/architecture/native/absent.cfg")
+        write_architecture(self.root, md=md.replace("native/archtool.cfg", "native/../../x"))
+        self.fails("introuvable")
 
-    def test_native_errors(self):
-        for native, fragment in (({"tool": "", "config": "docs/architecture/native/archtool.cfg"}, "native.tool"),
-                                 ({"tool": "archtool", "config": "pyproject.toml"}, "doit être sous docs/architecture/native/"),
-                                 ({"tool": "archtool", "config": "docs/architecture/native/../../x"}, "doit être sous"),
-                                 ({"tool": "archtool", "config": "docs/architecture/native/absent.cfg"}, "introuvable"),
-                                 ({"tool": "archtool", "config": "docs/architecture/native/archtool.cfg",
-                                   "baseline": "docs/architecture/native/baseline.txt"}, "baseline")):
-            self.rules(native=native)
-            self.fails(fragment)
-        (self.root / "docs/architecture/native/baseline.txt").write_text("x")
-        self.rules(native={"tool": "archtool", "config": "docs/architecture/native/archtool.cfg",
-                           "baseline": "docs/architecture/native/baseline.txt"})
-        self.assertEqual(validate(self.root).returncode, 0)
-
-    def test_prose_and_rules_must_agree(self):
-        self.rules(modules=RULES["modules"] + [{"name": "infra", "paths": ["src/infra/**"]}],
-                   allowed_dependencies={"domain": [], "app": ["domain"], "infra": []})
-        self.fails("module `infra` (rules.json) absent")
-        md = ARCH_MD.format(status="accepted").replace("`archtool`", "autre").replace("archtool.cfg", "x.cfg")
-        write_architecture(self.root, md=md)
-        self.fails("ne mentionne pas l'outil")
+    def test_rules_json_no_longer_required(self):
+        self.assertFalse((self.root / "docs/architecture/rules.json").exists())
+        self.assertEqual(validate(self.root, "--require-accepted").returncode, 0)
 
     def test_adr_consistency(self):
         adr = self.root / "docs" / "adr"
