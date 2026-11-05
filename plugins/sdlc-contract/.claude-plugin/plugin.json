@@ -1,0 +1,16 @@
+{
+  "name": "sdlc-contract",
+  "version": "0.2.0",
+  "description": "Contrat partagé du SDLC : gabarits brief/spec/plan/ADR, schéma de verdict, conventions, validateur de spec",
+  "author": {
+    "name": "Gaëtan Ars"
+  },
+  "homepage": "https://github.com/gaetanars/claude-plugins/tree/main/plugins/sdlc-contract",
+  "repository": "https://github.com/gaetanars/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "sdlc",
+    "spec",
+    "contract"
+  ]
+}

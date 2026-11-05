@@ -4,9 +4,40 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 ## Plugins
 
-| Plugin | Version | Description |
-|---|---|---|
-| [`cadre`](plugins/cadre/README.md) | 0.1.0 | Cadrage par le contexte (Python, TypeScript, GitHub) : PRODUCT.md, ARCHITECTURE.md, specs validées, tests d'acceptation verrouillés, commande `check` à l'arrêt. Expérimental. |
+| Plugin | Où l'installer | Version | Description |
+|---|---|---|---|
+| `sdlc-contract` | poste et serveur | 0.2.0 | Contrat partagé : gabarits brief/spec/plan/ADR/architecture, schéma de verdict, conventions, contrat `.claude/check.json`, `sdlc-validate-spec`, `sdlc-validate-architecture`, `sdlc-init-repo`. |
+| `sdlc-framing` | poste | 0.2.0 | Skills `challenger` (idéation), `architect` (architecture) et `po` (cadrage), `sdlc-publish` (spec → issue GitHub). Dépend de `sdlc-contract`. |
+| [`sdlc-factory`](plugins/sdlc-factory/README.md) | serveur | 0.2.0 | Agents planner/implementer/reviewers/retro, orchestrateur `sdlc-run`, `sdlc-retro`, garde-fous, unités systemd. Dépend de `sdlc-contract`. Expérimental. |
+
+## Parcours SDLC
+
+Tu n'interviens qu'en idéation et cadrage (poste) ; un automate (serveur) fait plan → implémentation → check → 3 revues → PR. **Le merge est humain par défaut.**
+
+```
+POSTE (toi)                                         SERVEUR (automate)
+/sdlc-framing:architect   → docs/architecture/ (ARCHITECTURE.md, rules.json, config native) + ADR
+                            une fois par projet ; ensuite `adr <sujet>` / `revise` ; commit de ta part
+/sdlc-framing:challenger  → brief.md
+/sdlc-framing:po          → spec.md + ambiguities.md (refuse sans architecture acceptée ; renvoie vers
+                            `architect adr` si une unité impose une décision structurante)
+sdlc-publish publish <id> → push main + issue [<id>] + label `ready` EN DERNIER
+                                                    sdlc-run (timer) : issue `ready`, dépendances fermées
+                                                    ├─ setup : `needs-human` si architecture absente/non acceptée ou
+                                                    │          .claude/check.json (check + arch) absent ou au gabarit
+                                                    ├─ planner (Opus)       → plan.md + ADR locales ; décision structurante → `needs-clarification`
+                                                    ├─ implementer (Sonnet) → commits TDD
+                                                    ├─ check + arch (lancés par l'orchestrateur, sans jeton) : rouge → retour à l'implementer
+                                                    │  (toucher à docs/architecture/ ou .claude/ → `needs-human`)
+                                                    ├─ 3 reviewers en parallèle (contexte vierge) → verdicts JSON liés au SHA
+                                                    ├─ rejet : corrige ; 3 itérations max (check rouge compris), sinon `needs-human`
+                                                    └─ push, PR, statut `sdlc/verdicts`, label `in-review` → TU FUSIONNES
+                                                       (opt-in par dépôt : `owner/repo automerge` → auto-merge GitHub armé)
+                                                    ambiguïté → `needs-clarification` ; tu réponds, tu remets `ready`
+sdlc-retro (hebdo) → PR sur CE dépôt : améliorations des prompts/skills/gabarits, preuves à l'appui, runs en échec inclus
+```
+
+Installation poste : `/plugin install sdlc-framing@gaetanars` (`sdlc-contract` suit en dépendance), puis dans un projet `sdlc-init-repo scaffold` (renseigner `CLAUDE.md` et `.claude/check.json`), puis `/sdlc-framing:architect init`. Installation serveur et garde-fous : [`plugins/sdlc-factory/README.md`](plugins/sdlc-factory/README.md).
 
 ## Installation
 
@@ -14,12 +45,14 @@ Dans Claude Code :
 
 ```
 /plugin marketplace add gaetanars/claude-plugins
-/plugin install cadre@gaetanars
+/plugin install sdlc-framing@gaetanars
 ```
 
-Équivalent en ligne de commande : `claude plugin marketplace add gaetanars/claude-plugins` puis `claude plugin install cadre@gaetanars`.
+Équivalent en ligne de commande : `claude plugin marketplace add gaetanars/claude-plugins` puis `claude plugin install sdlc-framing@gaetanars`.
 
-> **Retrait de `tdd-forge`** : le plugin est remplacé par `cadre` (historique git conservé). `claude plugin uninstall tdd-forge@gaetanars` avant d'installer `cadre`.
+> **Retrait de `cadre`** : le plugin est remplacé par les plugins SDLC (historique git conservé). `claude plugin uninstall cadre@gaetanars` avant d'installer `sdlc-framing`. Le contrat `.claude/check.json` est repris sans `acceptance_dir`.
+
+> **Retrait de `tdd-forge`** : déjà remplacé (historique git conservé) ; `claude plugin uninstall tdd-forge@gaetanars` s'il est encore installé.
 
 > **Migration** : la marketplace s'appelait `tdd-forge` (dépôt `gaetanars/tdd-forge`). Retire l'ancienne (`claude plugin marketplace remove tdd-forge`) puis réinstalle avec les commandes ci-dessus.
 
@@ -29,7 +62,7 @@ L'auto-update est désactivé par défaut pour une marketplace tierce :
 
 ```
 claude plugin marketplace update gaetanars
-claude plugin update cadre@gaetanars
+claude plugin update sdlc-framing@gaetanars
 ```
 
 ## Structure
@@ -39,7 +72,7 @@ claude plugin update cadre@gaetanars
 plugins/<plugin>/                 un dossier par plugin
   .claude-plugin/plugin.json      manifeste, seule source de la version
   skills/ agents/ commands/ hooks/ workflows/ …
-tests/                            validation des éléments (unittest, stdlib)
+tests/                            validation des éléments et tests SDLC (unittest, stdlib) ; sdlc_fakebin/ = faux gh/claude
 .github/workflows/validate.yml    CI
 ```
 
@@ -74,7 +107,11 @@ Les plugins sont découverts depuis `marketplace.json` : un nouveau plugin est c
 | `test_agents` | `agents/*.md` | `name` = fichier, `description` non vide, aucun champ ignoré pour un agent de plugin (`hooks`, `mcpServers`, `permissionMode`, `initialPrompt`) |
 | `test_hooks` | `hooks/hooks.json` | clé `hooks`, tout script `${CLAUDE_PLUGIN_ROOT}/…` existe |
 | `test_workflows` | `workflows/*.js` | bloc `meta` (`name` = fichier, `description`), syntaxe valide via `node` |
-| `test_files` | fichiers du plugin | JSON valides, Python compilable, shell valide (`bash -n`) |
+| `test_files` | fichiers du plugin | JSON valides, Python compilable, shell valide (`bash -n`), `plugins/*/bin/` : shebang + bit exécutable (index git) |
+| `test_sdlc_validate_spec`, `test_sdlc_publish` | `sdlc-contract`, `sdlc-framing` | validateur de spec, publication, `sdlc-init-repo` (`--automerge`, scaffold `check.json`) contre un faux `gh` |
+| `test_sdlc_validate_architecture` | `sdlc-contract` | format d'architecture : sections, `rules.json` (modules, graphe acyclique, outil natif sous `docs/architecture/native/`), ADR, `--require-accepted` |
+| `test_sdlc_guard`, `test_sdlc_run_unit` | `sdlc-factory` | garde-fou (mode fermé, périmètre de la rétro), fonctions pures de `sdlc-run`/`sdlc-retro` (`collect`, `load_check`, `read_repos`) |
+| `test_sdlc_e2e` | `sdlc-factory` | `sdlc-run` de bout en bout hors ligne (faux `gh`/`claude`, dépôt git local) : gates check + arch, architecture verrouillée, merge humain/opt-in automerge, argv de `claude` |
 | job `actionlint` | workflows GitHub | `.github/workflows` et YAML de plugins contenant `jobs:` |
 
 Contraintes : le frontmatter doit rester en `clé: valeur` sur une ligne (lecteur stdlib volontairement minimal). La version du CLI Claude Code est figée dans `validate.yml` (`CLAUDE_CODE_VERSION`) et se met à jour à la main.

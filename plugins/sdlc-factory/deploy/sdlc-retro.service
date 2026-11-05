@@ -1,0 +1,12 @@
+[Unit]
+Description=SDLC - rétrospective
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sdlc
+EnvironmentFile=/etc/sdlc/env
+ExecStart=/opt/sdlc/plugins/sdlc-factory/bin/sdlc-retro
+TimeoutStartSec=2h
+NoNewPrivileges=yes
+PrivateTmp=yes

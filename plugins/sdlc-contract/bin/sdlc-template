@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# sdlc-template <nom> — affiche un gabarit du contrat (brief, spec, ambiguities, plan, adr, project-CLAUDE, architecture, architecture-rules).
+set -euo pipefail
+root="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+name="${1:-}"
+file=""
+for ext in md json; do [[ -f "$root/templates/$name.$ext" ]] && file="$root/templates/$name.$ext"; done
+if [[ -z "$name" || -z "$file" ]]; then
+  echo "usage: sdlc-template <$(ls "$root/templates" | sed 's/\.[a-z]*$//' | paste -sd'|' -)>" >&2
+  exit 1
+fi
+cat "$file"

@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""sdlc-retro — rétrospective : analyse les runs récents et ouvre une PR d'amélioration sur le dépôt marketplace.
+
+Lit docs/features/*/run.json et reviews/*.json des dépôts listés, écrit un digest, lance l'agent `retro`
+dans un worktree du dépôt marketplace, puis ouvre une PR (jamais fusionnée automatiquement).
+Usage : sdlc-retro [--repo OWNER/REPO]... [--min-runs 3] [--dry-run]
+"""
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from sdlc_common import SDLC_HOME, WORKDIR, call_claude, gh, git, log, sh  # noqa: E402
+
+
+def gates_failed(data):
+    """Nombre de gates `check` / `arch` rouges, toutes itérations confondues."""
+    return sum(1 for it in data.get("iterations", []) if isinstance(it, dict)
+               for k in ("check", "arch") if isinstance(it.get(k), dict) and not it[k].get("ok", True))
+
+
+def _runs_at(base, ref, repo):
+    """Runs lus dans un commit (run.json + reviews/) via git, sans toucher à l'arbre de travail."""
+    tree = sh("git", "-C", base, "ls-tree", "-r", "--name-only", ref, "--", "docs/features", check=False).splitlines()
+    out = []
+    for path in tree:
+        if not path.endswith("/run.json"):
+            continue
+        fdir = path.rsplit("/", 1)[0]
+        try:
+            data = json.loads(sh("git", "-C", base, "show", f"{ref}:{path}"))
+        except (ValueError, RuntimeError):
+            continue
+        findings = []
+        for vf in (t for t in tree if t.startswith(fdir + "/reviews/") and t.endswith(".json")):
+            try:
+                v = json.loads(sh("git", "-C", base, "show", f"{ref}:{vf}"))
+            except (ValueError, RuntimeError):
+                continue
+            for f in v.get("findings", []):
+                findings.append({"axis": v["axis"], "iteration": v["iteration"], "severity": f["severity"],
+                                 "file": f["file"], "issue": f["issue"][:300]})
+        out.append({"repo": repo, "feature": data["feature"], "outcome": data["outcome"], "detail": data.get("detail", ""),
+                    "iterations": len(data.get("iterations", [])), "cost_usd": data.get("cost_usd_total"),
+                    "duration_s": data.get("duration_s"), "gates_failed": gates_failed(data), "ended_at": data.get("ended_at", ""), "findings": findings})
+    return out
+
+
+def collect(repos, since):
+    """Runs terminés depuis `since`, sur la branche par défaut ET sur les branches origin/feat/* (les runs en échec
+    n'y sont jamais fusionnés). Dédoublonnage par (dépôt, feature) : le run le plus récent l'emporte."""
+    best = {}
+    for repo in repos:
+        base = WORKDIR / "repos" / repo.replace("/", "__")
+        if not base.exists():
+            continue
+        sh("git", "-C", base, "fetch", "origin", "--prune", check=False)
+        sh("git", "-C", base, "merge", "--ff-only", "@{u}", check=False)
+        refs = ["HEAD"] + sh("git", "-C", base, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/feat/",
+                             check=False).splitlines()
+        for ref in refs:
+            for r in _runs_at(base, ref, repo):
+                if r["ended_at"] <= since:
+                    continue
+                key = (repo, r["feature"])
+                if key not in best or r["ended_at"] > best[key]["ended_at"]:
+                    best[key] = r
+    return [{k: v for k, v in r.items() if k != "ended_at"} for r in best.values()]
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", action="append", default=[])
+    ap.add_argument("--min-runs", type=int, default=3)
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+    os.environ.setdefault("GIT_AUTHOR_NAME", "sdlc-bot")
+    os.environ.setdefault("GIT_COMMITTER_NAME", "sdlc-bot")
+    os.environ.setdefault("GIT_AUTHOR_EMAIL", "sdlc-bot@localhost")
+    os.environ.setdefault("GIT_COMMITTER_EMAIL", "sdlc-bot@localhost")
+
+    repos = args.repo or [l.split("#", 1)[0].split()[0] for l in (
+        Path(os.environ.get("SDLC_REPOS_FILE") or Path.home() / ".config/sdlc/repos").read_text().splitlines())
+        if l.split("#", 1)[0].split()]  # 1er mot : le suffixe `automerge` ne concerne que sdlc-run
+    state = WORKDIR / "retro"
+    state.mkdir(parents=True, exist_ok=True)
+    last = state / "last.json"
+    since = json.loads(last.read_text())["date"] if last.exists() else "1970-01-01"
+    runs = collect(repos, since)
+    if len(runs) < args.min_runs:
+        log(f"{len(runs)} run(s) depuis {since} (< {args.min_runs}) : rien à analyser")
+        return 0
+    today = dt.date.today().isoformat()
+    digest = state / f"digest-{today}.json"
+    digest.write_text(json.dumps({"since": since, "runs": runs}, ensure_ascii=False, indent=1), encoding="utf-8")
+    if args.dry_run:
+        print(f"[dry-run] {len(runs)} runs, digest : {digest}")
+        return 0
+
+    branch = f"retro/{today}"
+    wt = WORKDIR / "wt" / "_sdlc" / f"retro-{today}"
+    sh("git", "-C", SDLC_HOME, "fetch", "origin", "--prune")
+    default = sh("git", "-C", SDLC_HOME, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").split("/", 1)[1]
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    sh("git", "-C", SDLC_HOME, "worktree", "add", "-B", branch, wt, f"origin/{default}")
+    calls = []
+    prompt = (f"Rétrospective du SDLC. Digest des runs depuis {since} : {digest} ({len(runs)} runs). "
+              f"Le worktree courant est le dépôt marketplace ; propose des améliorations ciblées selon ta méthode.")
+    body = call_claude("retro", prompt, wt, calls, phase="retro", allow_read=[state])
+    if not git(wt, "status", "--porcelain"):
+        log("aucune modification proposée")
+        last.write_text(json.dumps({"date": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}))
+        return 0
+    git(wt, "add", "-A")
+    git(wt, "commit", "-m", f"chore(sdlc): améliorations issues de la rétro du {today}", "-m", f"Runs analysés : {len(runs)}")
+    git(wt, "push", "-u", "origin", branch)
+    repo = sh("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner", cwd=SDLC_HOME)
+    url = gh("pr", "create", "--repo", repo, "--base", default, "--head", branch,
+             "--title", f"Rétro SDLC {today}", "--body-file", "-", input=body or "(pas de synthèse)")
+    last.write_text(json.dumps({"date": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}))
+    log(f"PR de rétro : {url}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

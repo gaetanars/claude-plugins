@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""sdlc-publish — publie un cadrage validé vers GitHub.
+
+  sdlc-publish next-id <slug>              # prochain identifiant NNNN-slug
+  sdlc-publish publish <feature-id> [--dry-run]
+
+publish : valide le cadrage, commit + push sur la branche par défaut, crée l'issue
+`[<id>] <titre>` (corps = résumé + lien épinglé au SHA + bloc machine), puis pose le label
+`ready` EN DERNIER. Si une étape échoue avant, `ready` n'est jamais posé.
+"""
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+
+
+def run(*args, check=True, input=None):
+    r = subprocess.run(args, capture_output=True, text=True, input=input)
+    if check and r.returncode:
+        sys.exit(f"échec : {' '.join(args)}\n{(r.stderr or r.stdout).strip()}")
+    return r.stdout.strip()
+
+
+def toplevel() -> Path:
+    return Path(run("git", "rev-parse", "--show-toplevel"))
+
+
+def slugify(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "feature"
+
+
+def next_id(slug: str) -> str:
+    fdir = toplevel() / "docs" / "features"
+    nums = [int(m.group(1)) for p in fdir.glob("*") if (m := re.match(r"(\d{4})-", p.name))] if fdir.is_dir() else []
+    return f"{max(nums, default=0) + 1:04d}-{slugify(slug)}"
+
+
+def frontmatter(text):
+    m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
+    fm = {}
+    if m:
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                fm[k.strip()] = v.strip()
+    return fm, (m.group(2) if m else text)
+
+
+def find_tool(name):
+    p = shutil.which(name)
+    if p:
+        return p
+    sibling = Path(__file__).resolve().parents[2] / "sdlc-contract" / "bin" / name
+    return str(sibling) if sibling.exists() else None
+
+
+def find_validator():
+    return find_tool("sdlc-validate-spec")
+
+
+def check_architecture(root: Path):
+    """L'architecture doit être cadrée, acceptée et commitée (le serveur lit le dépôt, pas le poste)."""
+    validator = find_tool("sdlc-validate-architecture")
+    if not validator:
+        sys.exit("sdlc-validate-architecture introuvable (plugin sdlc-contract installé ?)")
+    v = subprocess.run([validator, "--require-accepted", str(root / "docs" / "architecture")], capture_output=True, text=True)
+    if v.returncode:
+        sys.exit((v.stderr.strip() or v.stdout.strip()) + "\n→ /sdlc-framing:architect")
+    dirty = run("git", "status", "--porcelain", "--", "docs/architecture", "docs/adr", ".claude/check.json")
+    if dirty:
+        sys.exit("architecture, ADR ou .claude/check.json non commités (le serveur lit le dépôt) :\n" + dirty)
+    if not run("git", "ls-files", "--", "docs/architecture/rules.json"):
+        sys.exit("docs/architecture/rules.json n'est pas suivi par git : commit d'abord")
+
+
+def publish(fid: str, dry: bool):
+    root = toplevel()
+    fdir = root / "docs" / "features" / fid
+    if not fdir.is_dir():
+        sys.exit(f"dossier introuvable : docs/features/{fid}")
+
+    validator = find_validator()
+    if not validator:
+        sys.exit("sdlc-validate-spec introuvable (plugin sdlc-contract installé ?)")
+    v = subprocess.run([validator, str(fdir)], capture_output=True, text=True)
+    if v.returncode:
+        sys.exit(v.stderr.strip() or v.stdout.strip())
+    check_architecture(root)
+
+    default = run("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).split("/", 1)[-1] or "main"
+    current = run("git", "rev-parse", "--abbrev-ref", "HEAD")
+    if current != default:
+        sys.exit(f"publication depuis la branche par défaut uniquement (courante : {current}, attendue : {default})")
+    run("git", "fetch", "origin")
+    if int(run("git", "rev-list", "--count", f"HEAD..origin/{default}") or 0):
+        sys.exit(f"branche en retard sur origin/{default} : git pull --rebase d'abord")
+
+    repo = json.loads(run("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
+
+    def find_issue(feature_id):
+        rows = json.loads(run("gh", "issue", "list", "--repo", repo, "--state", "all", "--limit", "200",
+                              "--search", f'"[{feature_id}]" in:title', "--json", "number,title") or "[]")
+        return next((str(r["number"]) for r in rows if r["title"].startswith(f"[{feature_id}]")), None)
+
+    existing = find_issue(fid)
+    if existing:
+        sys.exit(f"déjà publié : issue #{existing}")
+
+    fm, body = frontmatter((fdir / "spec.md").read_text(encoding="utf-8"))
+    title = fm["title"]
+    deps = [x.strip() for x in fm.get("depends_on", "[]").strip("[]").split(",") if x.strip()]
+    dep_issues = []
+    for d in deps:
+        n = find_issue(d)
+        if not n:
+            sys.exit(f"dépendance {d} non publiée : publier les unités dans l'ordre des dépendances")
+        dep_issues.append(n)
+
+    secs = {}
+    cur = None
+    for line in body.splitlines():
+        m = re.match(r"##\s+(.+?)\s*$", line)
+        if m:
+            cur = m.group(1)
+            secs[cur] = []
+        elif cur:
+            secs[cur].append(line)
+    ctx = next((p.strip() for p in "\n".join(secs.get("Contexte", [])).split("\n\n") if p.strip()), "")
+    criteria = "\n".join(l for l in secs.get("Critères d'acceptation", []) if l.strip())
+
+    if dry:
+        print(f"[dry-run] publierait [{fid}] {title} ; dépendances issues : {dep_issues or 'aucune'}")
+        return
+
+    run("git", "add", "--", f"docs/features/{fid}")
+    if run("git", "diff", "--cached", "--name-only", "--", f"docs/features/{fid}"):
+        run("git", "commit", "-m", f"docs({fid}): cadrage (brief, spec, ambiguïtés)", "-m", f"Feature: {fid}",
+            "--", f"docs/features/{fid}")
+    run("git", "push", "origin", f"HEAD:{default}")
+    sha = run("git", "rev-parse", "HEAD")
+
+    base = f"https://github.com/{repo}/blob/{sha}/docs/features/{fid}"
+    issue_body = f"""## Résumé
+{ctx}
+
+## Critères d'acceptation
+{criteria}
+
+## Cadrage (immuable, épinglé au commit {sha[:7]})
+- [spec.md]({base}/spec.md)
+- [brief.md]({base}/brief.md)
+- [ambiguities.md]({base}/ambiguities.md)
+
+<!-- sdlc:begin -->
+feature_id: {fid}
+spec_path: docs/features/{fid}/spec.md
+spec_sha: {sha}
+schema_version: 1
+depends_on_issues: {",".join(dep_issues)}
+<!-- sdlc:end -->
+"""
+    url = run("gh", "issue", "create", "--repo", repo, "--title", f"[{fid}] {title}", "--body-file", "-", input=issue_body)
+    number = url.rstrip("/").split("/")[-1]
+    run("gh", "issue", "edit", number, "--repo", repo, "--add-label", "ready")
+    print(f"publié : {url} (ready, spec épinglée à {sha[:7]})")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("next-id")
+    n.add_argument("slug")
+    p = sub.add_parser("publish")
+    p.add_argument("feature_id")
+    p.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args()
+    if a.cmd == "next-id":
+        print(next_id(a.slug))
+    else:
+        publish(a.feature_id, a.dry_run)
+
+
+if __name__ == "__main__":
+    main()

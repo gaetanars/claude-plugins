@@ -1,4 +1,0 @@
-{
-  "check": "npx biome ci . && npx tsc --noEmit && npx vitest run --coverage",
-  "acceptance_dir": "tests/acceptance"
-}

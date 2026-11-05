@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""sdlc-validate-spec <docs/features/<id>> — valide un cadrage avant publication.
+
+Contrôles : fichiers présents, frontmatter, sections obligatoires, critères d'acceptation
+testables, aucun marqueur d'incomplétude, aucune question ouverte dans ambiguities.md.
+Sortie : 0 = valide ; 1 = erreurs listées sur stderr.
+"""
+import re
+import sys
+from pathlib import Path
+
+SUPPORTED_SCHEMA = {"1"}
+ID_RE = re.compile(r"^\d{4}-[a-z0-9]+(-[a-z0-9]+)*$")
+SECTIONS = ["Contexte", "Périmètre", "Hors périmètre", "Critères d'acceptation", "Contraintes"]
+BRIEF_SECTIONS = ["Problème", "Valeur"]
+PLACEHOLDERS = re.compile(r"\b(TODO|TBD|FIXME|NNNN)\b|\?\?\?|à définir|a definir", re.I)
+FENCE = re.compile(r"^```.*?^```", re.S | re.M)
+
+
+def parse_frontmatter(text):
+    m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
+    if not m:
+        return None, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip()
+    return fm, m.group(2)
+
+
+def parse_list(value):
+    v = value.strip()
+    if not (v.startswith("[") and v.endswith("]")):
+        return None
+    return [x.strip().strip("'\"") for x in v[1:-1].split(",") if x.strip()]
+
+
+def sections(body):
+    out, cur = {}, None
+    for line in body.splitlines():
+        m = re.match(r"##\s+(.+?)\s*$", line)
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(line)
+    return {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+def validate(fdir: Path):
+    errs = []
+    files = {}
+    for name in ("brief", "spec", "ambiguities"):
+        p = fdir / f"{name}.md"
+        if not p.is_file():
+            errs.append(f"{name}.md manquant")
+        else:
+            files[name] = p.read_text(encoding="utf-8")
+    if errs:
+        return errs
+
+    for name, text in files.items():
+        fm, _ = parse_frontmatter(text)
+        if fm is None:
+            errs.append(f"{name}.md : frontmatter absent")
+            continue
+        if fm.get("schema_version") not in SUPPORTED_SCHEMA:
+            errs.append(f"{name}.md : schema_version {fm.get('schema_version')!r} non supporté (attendu {sorted(SUPPORTED_SCHEMA)})")
+        if fm.get("id") != fdir.name:
+            errs.append(f"{name}.md : id {fm.get('id')!r} ≠ nom du dossier {fdir.name!r}")
+    if not ID_RE.match(fdir.name):
+        errs.append(f"nom de dossier {fdir.name!r} invalide (attendu NNNN-slug)")
+
+    # spec
+    fm, body = parse_frontmatter(files["spec"])
+    if fm is not None:
+        if not fm.get("title"):
+            errs.append("spec.md : title manquant")
+        if fm.get("status") != "ready":
+            errs.append(f"spec.md : status doit être 'ready' (actuel {fm.get('status')!r})")
+        deps = parse_list(fm.get("depends_on", ""))
+        if deps is None:
+            errs.append("spec.md : depends_on doit être une liste, ex. [] ou [0001-foo]")
+        else:
+            for d in deps:
+                if not ID_RE.match(d):
+                    errs.append(f"spec.md : dépendance invalide {d!r}")
+                if d == fdir.name:
+                    errs.append("spec.md : une unité ne peut dépendre d'elle-même")
+    secs = sections(body)
+    for s in SECTIONS:
+        if s not in secs:
+            errs.append(f"spec.md : section « {s} » manquante")
+        elif len(secs[s]) < 10:
+            errs.append(f"spec.md : section « {s} » vide ou trop courte")
+    ca = secs.get("Critères d'acceptation", "")
+    items = re.findall(r"^- \[[ xX]\] (CA-\d+): (.+)$", ca, re.M)
+    if not items:
+        errs.append("spec.md : aucun critère au format « - [ ] CA-n: … »")
+    ids = [i for i, _ in items]
+    if len(ids) != len(set(ids)):
+        errs.append("spec.md : identifiants CA dupliqués")
+    for i, text in items:
+        if len(text.strip()) < 15:
+            errs.append(f"spec.md : {i} trop vague (« {text.strip()} »)")
+    if not re.search(r"^\s*[-*] \S", secs.get("Hors périmètre", ""), re.M):
+        errs.append("spec.md : « Hors périmètre » doit lister au moins un élément")
+
+    # brief
+    _, bbody = parse_frontmatter(files["brief"])
+    bsecs = sections(bbody)
+    for s in BRIEF_SECTIONS:
+        if len(bsecs.get(s, "")) < 10:
+            errs.append(f"brief.md : section « {s} » manquante ou vide")
+
+    # marqueurs d'incomplétude
+    for name in ("brief", "spec"):
+        text = FENCE.sub("", files[name])
+        for n, line in enumerate(text.splitlines(), 1):
+            if PLACEHOLDERS.search(line):
+                errs.append(f"{name}.md : marqueur d'incomplétude : {line.strip()[:80]!r}")
+                break
+    if re.search(r"^# .*(Titre court)", files["spec"], re.M):
+        errs.append("spec.md : titre encore au format gabarit")
+
+    # ambiguïtés
+    amb = files["ambiguities"]
+    for n, line in enumerate(amb.splitlines(), 1):
+        if re.match(r"\s*- \[ \]", line):
+            errs.append(f"ambiguities.md:{n} : question ouverte : {line.strip()[:80]!r}")
+        if re.search(r"\bOUVERT(E)?\b", line):
+            errs.append(f"ambiguities.md:{n} : marqueur OUVERT")
+    return errs
+
+
+def main(argv):
+    if len(argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 2
+    fdir = Path(argv[1]).resolve()
+    if not fdir.is_dir():
+        print(f"dossier introuvable : {argv[1]}", file=sys.stderr)
+        return 2
+    errs = validate(fdir)
+    if errs:
+        print(f"Cadrage invalide ({len(errs)} erreur(s)) :", file=sys.stderr)
+        for e in errs:
+            print(f"- {e}", file=sys.stderr)
+        return 1
+    print(f"OK : {fdir.name}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

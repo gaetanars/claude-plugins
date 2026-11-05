@@ -1,2 +1,0 @@
-# cadre
-.claude/check-state.json
