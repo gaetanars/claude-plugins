@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "gaetanars",
-  "description": "Plugins Claude Code de Gaëtan Ars : SDLC agentique (cadrage sur poste, usine de développement sur serveur, merge humain par défaut).",
+  "description": "Plugins Claude Code de Gaëtan Ars : SDLC agentique (cadrage interactif, usine autonome sur serveur Orca, merge humain).",
   "owner": {
     "name": "Gaëtan Ars",
     "url": "https://github.com/gaetanars"
@@ -33,7 +33,7 @@
     {
       "name": "sdlc-factory",
       "source": "./plugins/sdlc-factory",
-      "description": "Serveur : agents planner/implementer/reviewers, orchestrateur sdlc-run avec gate check, sandbox, garde-fous et rétrospective.",
+      "description": "Usine sur serveur Orca : skill deliver, agents planner/implementer/reviewer, sdlc-gate (TDD vérifié, gates, livraison en PR).",
       "category": "development",
       "keywords": [
         "sdlc",

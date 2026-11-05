@@ -1,77 +1,90 @@
 # sdlc-factory
 
-Usine du SDLC, côté **serveur** : agents `planner` (Opus), `implementer` (Sonnet), `reviewer-{correctness,security,simplicity}` (Sonnet), `retro` (Opus) ; orchestrateur `sdlc-run` ; `sdlc-retro` ; garde-fous ; unités systemd. Dépend de `sdlc-contract`. Parcours complet : [README racine](../../README.md#parcours-sdlc).
+Usine du SDLC, sur un **serveur Orca** : une automatisation Orca lance le skill `/sdlc-factory:deliver` dans un worktree neuf ;
+il prend la prochaine issue `ready`, planifie (`planner`, Opus), implémente en TDD vérifié (`implementer`, Sonnet),
+fait relire (`reviewer`, Sonnet, contexte vierge, trois axes) puis ouvre la PR. **Le merge est toujours humain.**
+`sdlc-gate` porte tout ce qui doit être déterministe : choix de l'issue, validations, TDD, gates, verdict, push, PR, labels.
+Dépend de `sdlc-contract`. Parcours complet : [README racine](../../README.md#parcours-sdlc).
 
-Expérimental : aucun appel réel de bout en bout n'a été vérifié (voir plus bas).
+## Déroulé d'un run
 
-## Installation — serveur
-
-**Pré-requis GitHub.** L'automate tourne sous un **compte distinct** (machine user, collaborateur en *écriture*, non admin). Avec ton propre jeton il serait admin, contournerait la protection de branche et rien ne le retiendrait. Toi, admin, pousses directement sur `main` (`enforce_admins: false`) ; le bot passe obligatoirement par PR + checks.
-
-**Pré-requis système.** `python3`, `git`, `gh`, `claude` (connecté : `claude login` en tant que `sdlc`, ou `ANTHROPIC_API_KEY`), et pour le sandbox Linux **`bubblewrap` et `socat`** (`apt install bubblewrap socat`). Sans eux, les appels échouent (`failIfUnavailable: true`) : c'est voulu.
-
-```bash
-sudo useradd -m -s /bin/bash sdlc
-sudo -u sdlc git clone --branch <tag> git@github.com:gaetanars/claude-plugins.git /opt/sdlc   # épingle un tag : rien ne change sans ton accord
-sudo mkdir /etc/sdlc && sudo cp /opt/sdlc/plugins/sdlc-factory/deploy/env.example /etc/sdlc/env   # éditer, chmod 600, chown sdlc
-printf 'toi/projet-a\n' | sudo tee /etc/sdlc/repos
-sudo -u sdlc gh auth setup-git                       # credential helper git → GH_TOKEN
-sudo cp /opt/sdlc/plugins/sdlc-factory/deploy/*.service /opt/sdlc/plugins/sdlc-factory/deploy/*.timer /etc/systemd/system/
-sudo systemctl enable --now sdlc-run.timer sdlc-retro.timer
+```
+Orca (cron + precheck `sdlc-gate next`) → session Claude dans un worktree neuf → /sdlc-factory:deliver
+  sdlc-gate start        issue ready la plus ancienne (dépendances fermées) → in-progress, branche feat/<id>,
+                         spec inchangée depuis sa publication, spec + architecture + .claude/check.json valides
+  planner                plan.md ; question bloquante → posée dans la session (réponse dans « Clarifications » du plan)
+                         décision « Exige un ADR » → sdlc-gate escalate (needs-human)
+  implementer            par étape : commit test → sdlc-gate tests-red (check rouge constaté) → commit feat → sdlc-gate verify
+  sdlc-gate verify       check + arch verts, chemins protégés intacts, TDD respecté
+  reviewer → sdlc-gate review   approve requalifié si blocker/major ; 3 refus → needs-human
+  docs/learnings.md      apprentissages réutilisables du run
+  sdlc-gate deliver      verdict approve sur le dernier code, verify, push feat/<id>, PR « Closes #n », issue in-review
 ```
 
-Le serveur utilise un **clone épinglé + `--plugin-dir`** (pas `claude plugin install`) : `sdlc-run` doit être appelable par un chemin stable depuis systemd, et la version déployée est un tag que tu choisis.
+Une seule issue `in-progress` à la fois par dépôt. Une question en attente laisse l'issue `in-progress` : réponds dans la session (desktop ou mobile Orca).
 
-## Préparer un dépôt
+## Contrôles de `sdlc-gate`
 
-```bash
-sdlc-init-repo scaffold                                        # docs/, CLAUDE.md et .claude/check.json à renseigner
-sdlc-init-repo github toi/projet-a --ci-context build          # dry-run : labels, settings, protection de branche
-sdlc-init-repo github toi/projet-a --ci-context build --apply  # exécute (auto-merge désactivé)
-```
+- **TDD** : tout commit `test(...)` doit avoir été constaté rouge par `sdlc-gate tests-red` (note `refs/notes/sdlc-red`) ; tout commit `feat(...)` suit un commit `test` ;
+  le commit qui suit un commit `test` ne modifie aucun de ses fichiers.
+- **Chemins protégés** (diff depuis la base) : `docs/architecture/`, `docs/adr/`, `.claude/`, `.github/`, `spec.md` et `brief.md` de la feature.
+- **Gates** : `check` et `arch` de `.claude/check.json`, exécutés par `sdlc-gate` lui-même (sans variables de jeton).
+- **Verdict** : schéma `verdict.schema.json` de sdlc-contract, enregistré sur le commit relu (`refs/notes/sdlc-review`) ; après le verdict,
+  seuls `docs/learnings.md` et `plan.md` peuvent encore changer.
+- N'écrit jamais `.git/config` (protégé par la sandbox) : branches en `--no-track`, push sans `-u`.
 
-- **Architecture** : `/sdlc-framing:architect init` sur le poste (ARCHITECTURE.md, `rules.json` neutre, configuration de l'outil natif du langage sous `docs/architecture/native/`, ADR), puis commit. `sdlc-publish` refuse sans architecture acceptée et commitée ; `sdlc-run` aussi (`needs-human`).
-- **`.claude/check.json`** : `{"check": "<tests + lint + typecheck>", "arch": "<contrôle d'architecture>"}`, code de sortie 0 = vert. `sdlc-run` escalade en `needs-human` si l'un des deux est absent ou encore à `A_RENSEIGNER`.
-- **Merge humain par défaut** : la PR est ouverte, `sdlc/verdicts` posé, l'issue passe à `in-review` ; tu fusionnes.
-- **Auto-merge (opt-in par dépôt)** : `sdlc-init-repo github … --ci-context <ci> --automerge` (refusé sans `--ci-context`) **et** `toi/projet-a automerge` dans `/etc/sdlc/repos`. Le bot pose lui-même `sdlc/verdicts` : seule la CI du projet est un contrôle indépendant, d'où son caractère obligatoire.
-- Protection de branche sur dépôt **privé** : plan GitHub payant requis. Sans elle, `sdlc/verdicts` ne peut pas être « requis ».
+## Installation du serveur
 
-## Garde-fous
+Prérequis : Orca (`orca serve service install`, appairé en Tailscale au desktop et au mobile), `git`, `gh`, `claude`, `python3`,
+et pour le sandbox Linux `bubblewrap` et `socat`. Un utilisateur Unix dédié (ex. `dev`) fait tourner Orca ; ses `git`, clé SSH et `gh` sont ceux de l'usine.
 
-Trois couches, de la plus solide à la plus faible :
+1. **Plugins** : clone de la marketplace épinglé sur un tag, puis installation depuis ce chemin.
+   ```bash
+   git clone --branch <tag> git@github.com:gaetanars/claude-plugins.git ~/sdlc
+   claude plugin marketplace add ~/sdlc
+   claude plugin install sdlc-factory@gaetanars    # sdlc-contract suit en dépendance ; sdlc-framing pour cadrer sur le serveur
+   ```
+2. **Réglages Claude** (`/etc/claude-code/managed-settings.json` ou `~/.claude/settings.json`) : sandbox obligatoire, réseau sur liste blanche,
+   clés lisibles mais non modifiables. Aucune règle `Read` ni `sandbox.credentials` sur `~/.ssh` et `~/.config/gh` : elles les masquent au sandbox
+   et empêchent signature, push SSH et `gh`.
+   ```json
+   {
+     "permissions": { "defaultMode": "auto", "deny": ["Edit(~/.ssh/**)", "Edit(~/.config/gh/**)", "Read(~/.claude.json)"] },
+     "sandbox": {
+       "enabled": true, "failIfUnavailable": true, "allowUnsandboxedCommands": false,
+       "network": { "strictAllowlist": true, "allowedDomains": ["github.com", "*.github.com", "*.githubusercontent.com", "registry.npmjs.org"] }
+     }
+   }
+   ```
+   `gh auth status` doit indiquer un stockage fichier (`~/.config/gh/hosts.yml`) : le trousseau système n'est pas joignable depuis le sandbox.
+   Si tes consignes personnelles (`CLAUDE.md`, règles du mode auto) interdisent push et PR sans accord, ajoute une exception limitée :
+   *dans une session lancée par `/sdlc-factory:deliver`, pousser `feat/<id>` et ouvrir sa PR via `sdlc-gate deliver` est autorisé ; jamais de push sur la branche de base, jamais de merge.*
+3. **Dépôt** : clone dédié à l'usine (remote SSH), enregistré dans Orca, puis une automatisation par dépôt.
+   ```bash
+   git clone git@github.com:OWNER/REPO.git ~/repos/REPO && orca repo add --path ~/repos/REPO
+   orca automations create --name "sdlc REPO" --trigger hourly --enabled \
+     --repo path:$HOME/repos/REPO --workspace-mode new-per-run --base-branch origin/main \
+     --precheck "$HOME/sdlc/plugins/sdlc-factory/bin/sdlc-gate next --repo OWNER/REPO" \
+     --provider claude --extra-agent-args="--model opus" --prompt "/sdlc-factory:deliver"
+   ```
 
-1. **Utilisateur Unix `sdlc`** (sans sudo, jeton GitHub limité aux dépôts concernés) : le vrai périmètre.
-2. **Sandbox natif de Claude Code** (`--settings`) : activé et obligatoire (`failIfUnavailable`), pas d'échappatoire (`allowUnsandboxedCommands: false`), écriture limitée au worktree et au `.git` du clone de base, réseau limité à `SDLC_ALLOWED_DOMAINS` (défaut : `pypi.org,files.pythonhosted.org,registry.npmjs.org`). Il ne couvre que les commandes Bash.
-3. **`scripts/guard.py`** (hook PreToolUse, déterministe, échec en **mode fermé** : toute exception refuse l'action ; `timeout` + `onFailure: block` dans `hooks.json`). Il refuse `git push`, `gh`, réseau direct, `sudo`, `rm` hors worktree, lecture/écriture hors worktree, secrets (`~/.ssh`, `~/.config/gh`…), et l'édition de `.github/`, `.claude/`, `docs/features/`, `docs/adr/` par l'implementer. Reviewers : seules les commandes `git` de lecture (aussi imposées par `--allowedTools` en motifs natifs).
+## Préparer un dépôt (sur le poste)
 
-Architecture verrouillée :
-- `docs/architecture/` et `.claude/` sont refusés en écriture à l'implementer (`guard.py`) **et** contrôlés par l'orchestrateur sur le diff de chaque itération (`needs-human` si touchés) : le contrôle ne dépend pas du hook.
-- Le planner ne tranche aucune décision de la liste « Exige un ADR » : elle remonte en `needs-clarification`. Seul l'humain change l'architecture (`architect revise`).
-- Le SDLC ne contient aucun code par langage : l'outil natif est choisi au cadrage ; sans outil exploitable l'architecture reste `draft` et l'usine refuse de travailler.
+`sdlc-init-repo scaffold`, `/sdlc-framing:architect init`, renseigner `.claude/check.json` et `CLAUDE.md`, commiter ;
+`sdlc-init-repo github OWNER/REPO --ci-context <ci> --apply` (labels, protection de branche, auto-merge désactivé).
 
-Autres mesures :
-- `--setting-sources user` : les hooks, `env` et `.mcp.json` du `.claude/settings.json` du dépôt cible sont ignorés (`CLAUDE.md` reste lu comme fichier). `--bare` n'est pas utilisé : il désactive les hooks du plugin.
-- `--permission-mode dontAsk`, `--max-turns` par rôle (le `maxTurns` du frontmatter n'est pas documenté pour la session principale).
-- L'agent ne voit jamais `GH_TOKEN`. `ANTHROPIC_API_KEY` reste visible de `claude` (il en a besoin) mais est retirée de l'environnement de `check`.
-- La rétro ne peut pas modifier `scripts/ hooks/ bin/ lib/ deploy/ schemas/`, `plugins/sdlc-*/bin/`, `tests/`, `.claude-plugin/` ni `.github/` : le process évolue, pas sa sécurité. Elle bumpe le patch des `plugin.json` qu'elle modifie.
+## Risques assumés
 
-## Règles de verdict
-
-`approve` ⇔ le relecteur approuve **et** aucun finding `blocker`/`major` (sinon requalifié en `changes_requested`, `adjusted: true`). Les revues ne sont lancées que si `check` et `arch`, exécutés par l'orchestrateur, sont verts ; un rouge renvoie sa sortie à l'implementer comme finding `blocker` (axes `check` et `arch`). Unanimité des 3 axes requise ; 3 itérations maximum (un `check` rouge compte), puis `needs-human`.
-
-## Rodage
-
-1. `sdlc-run --dry-run` (affiche l'issue retenue et le mode de merge).
-2. Une petite feature réelle, merge humain, en lisant `docs/features/<id>/run.json` (tours, coûts, `subtype`, `permission_denials` par appel).
-3. N'activer `automerge` sur un dépôt qu'après plusieurs runs propres et une CI solide.
+L'usine agit avec l'identité GitHub de l'utilisateur du serveur. Si c'est ton compte (admin) : la protection de branche ne la retient pas
+(`enforce_admins: false`), elle peut lire ta clé et ton jeton et pousser sur tous les dépôts que ta clé atteint, et ses commits portent ta signature.
+Restent : le sandbox (réseau et écriture), `sdlc-gate` (qui ne pousse que `feat/<id>`), le footer `Feature: <id>` et ta relecture de chaque PR.
+Un compte bot non admin réduit ce périmètre.
 
 ## Vérifié / non vérifié
 
-Vérifié (hors ligne) : `claude plugin validate --strict` ; orchestrateur de bout en bout contre un faux `gh`, un faux `claude` et un dépôt git local (nominal, rejet puis correction, escalade, clarification, dépendances, spec invalide, gates `check` et `arch` rouge puis vert / absents / au gabarit, architecture absente ou `draft`, modification de l'architecture par l'implementer, merge humain et opt-in, argv de `claude`) ; garde-fou (dont mode fermé et périmètre de la rétro) ; collecte de la rétro sur branches `feat/*`.
+Vérifié hors ligne (`tests/test_sdlc_gate.py`, faux `gh`, dépôts git locaux) : `next`, `start` (dont escalades), cycle TDD, `verify`, `review` (requalification, plafond),
+`deliver`, `escalate`. Vérifié sur le serveur (essai Orca du 2026-11-05) : skill lancé depuis le prompt d'automatisation, worktree neuf par exécution,
+commit signé, push SSH et `gh` depuis le sandbox, mode auto sans blocage, question posée dans la session.
 
-**Non vérifié** :
-- Un vrai appel `claude -p --agent sdlc-factory:<agent> …` : les flags existent mais aucun modèle n'a été appelé, ni la prise en compte du hook du plugin en `-p`.
-- Les outils natifs réels (génération de leur configuration par le skill `architect`, exécution de `arch`) dans chaque langage, et la qualité de l'entretien du skill : à juger à l'usage.
-- Le sandbox réel (bubblewrap/socat sur le serveur Linux) et ses clés `sandbox.*` de `--settings` ; en particulier que `git commit` dans un worktree y fonctionne avec l'écriture sur le `.git` du clone de base.
-- GitHub réel : protection de branche, auto-merge, statut `sdlc/verdicts`.
-- Quotas : sur abonnement, Opus en boucle sera le premier goulot ; une clé API est l'alternative (`SDLC_BUDGET_USD` plafonne par appel).
+**Non vérifié** : un run complet de `/sdlc-factory:deliver` (sous-agents, enchaînement, qualité du plan et de la revue), l'écriture des notes git
+depuis le sandbox, la reprise d'une branche après `needs-human`, la réponse depuis le mobile, la consommation de quota.

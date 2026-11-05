@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""Faux `gh` pour les tests de bout en bout : état dans $FAKE_STATE (JSON), dépôt distant local $FAKE_REMOTE."""
+"""Faux `gh` pour les tests SDLC : état dans $FAKE_STATE (JSON)."""
 import json
 import os
-import subprocess
 import sys
 
 S = os.environ["FAKE_STATE"]
@@ -53,24 +52,13 @@ elif a[:2] == ["issue", "comment"]:
     i = st["issues"][a[2]]
     i["comments"].append({"id": f"IC_{a[2]}_{len(i['comments']) + 1}", "body": opt("--body"), "author": {"login": "sdlc-bot"}})
     save(st)
-elif a[:2] == ["repo", "clone"]:
-    subprocess.run(["git", "clone", "-q", os.environ["FAKE_REMOTE"], a[3]], check=True)
 elif a[:2] == ["pr", "list"]:
     print(json.dumps([{"number": int(n)} for n, p in st["prs"].items() if p["head"] == opt("--head") and p["state"] == "OPEN"]))
 elif a[:2] == ["pr", "create"]:
     n = str(len(st["prs"]) + 1)
-    st["prs"][n] = {"head": opt("--head"), "title": opt("--title"), "body": sys.stdin.read(), "state": "OPEN", "automerge": False}
+    st["prs"][n] = {"head": opt("--head"), "title": opt("--title"), "body": sys.stdin.read(), "state": "OPEN"}
     save(st)
     print(f"https://github.com/{opt('--repo')}/pull/{n}")
-elif a[:2] == ["pr", "merge"]:
-    if os.environ.get("FAKE_AUTOMERGE_FAIL"):
-        print("auto-merge non activé sur ce dépôt", file=sys.stderr)
-        sys.exit(1)
-    st["prs"][a[2]]["automerge"] = True
-    save(st)
-elif a[0] == "api":
-    st["statuses"].append({"path": a[1], "fields": [a[i + 1] for i, x in enumerate(a) if x == "-f"]})
-    save(st)
 else:
     print("fake gh : commande non gérée : " + " ".join(a), file=sys.stderr)
     sys.exit(1)

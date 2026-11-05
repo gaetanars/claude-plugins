@@ -52,9 +52,8 @@ class Publish(unittest.TestCase):
         sh("git", "config", "user.name", "t", cwd=self.proj)
         sh("git", "config", "user.email", "t@t", cwd=self.proj)
         self.state_path = self.t / "state.json"
-        self.state_path.write_text(json.dumps({"issues": {}, "prs": {}, "statuses": []}))
-        self.env = dict(os.environ, PATH=f"{FAKEBIN}{os.pathsep}{os.environ['PATH']}", FAKE_STATE=str(self.state_path),
-                        FAKE_REMOTE=str(self.remote))
+        self.state_path.write_text(json.dumps({"issues": {}, "prs": {}}))
+        self.env = dict(os.environ, PATH=f"{FAKEBIN}{os.pathsep}{os.environ['PATH']}", FAKE_STATE=str(self.state_path))
 
     def pub(self, *args):
         return subprocess.run([sys.executable, str(PUBLISH), *args], cwd=self.proj, env=self.env, capture_output=True, text=True)

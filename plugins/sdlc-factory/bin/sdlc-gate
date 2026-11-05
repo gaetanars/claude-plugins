@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""sdlc-gate — contrôles déterministes et livraison de l'usine SDLC (appelé par le skill /sdlc-factory:deliver).
+
+  sdlc-gate next --repo OWNER/REPO   precheck Orca : 0 s'il y a du travail (aucune issue in-progress et une issue
+                                     ready dont les dépendances sont fermées), 1 sinon
+  sdlc-gate start                    prend l'issue ready la plus ancienne, la passe in-progress, bascule le worktree
+                                     courant sur feat/<id>, valide le cadrage ; affiche un JSON
+  sdlc-gate tests-red                HEAD est un commit test(...) et `check` est rouge : le constate (note git)
+  sdlc-gate verify                   check et arch verts, chemins protégés intacts, TDD respecté
+  sdlc-gate review < verdict.json    enregistre le verdict du relecteur sur HEAD
+                                     (0 approve, 2 corrections demandées, 3 plafond atteint → needs-human)
+  sdlc-gate deliver                  verdict approve sur le dernier commit de code, verify, push feat/<id>, PR, in-review
+  sdlc-gate escalate "<message>"     push de la branche, needs-human, commentaire sur l'issue
+
+État : labels GitHub + git (branche feat/<id>, notes refs/notes/sdlc-red et refs/notes/sdlc-review).
+N'écrit jamais .git/config (protégé par la sandbox de Claude Code). Bibliothèque standard uniquement.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_ITER = int(os.environ.get("SDLC_MAX_ITER", "3"))
+CHECK_TIMEOUT = int(os.environ.get("SDLC_CHECK_TIMEOUT", "1800"))
+CHECK_TAIL = 3000
+SUPPORTED_SCHEMA = {"2"}
+PLACEHOLDER = "A_RENSEIGNER"  # valeur posée par `sdlc-init-repo scaffold`
+SECRET_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "ANTHROPIC_API_KEY")
+PROTECTED = ["docs/architecture", "docs/adr", ".claude", ".github"]
+AXES = ("correctness", "security", "simplicity")
+SEVERITIES = ("blocker", "major", "minor")
+RED, REVIEW = "sdlc-red", "sdlc-review"
+TYPE_RE = re.compile(r"^(\w+)(\([^)]*\))?!?:")
+
+
+class Fail(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- outils
+
+def sh(*args, check=True, input=None):
+    r = subprocess.run([str(a) for a in args], capture_output=True, text=True, input=input)
+    if check and r.returncode:
+        raise Fail(f"{' '.join(map(str, args))[:200]} → code {r.returncode}\n{(r.stderr or r.stdout).strip()[:1500]}")
+    return r.stdout.strip()
+
+
+def git(*a, **kw):
+    return sh("git", *a, **kw)
+
+
+def gh(*a, **kw):
+    return sh("gh", *a, **kw)
+
+
+def ghjson(*a):
+    return json.loads(gh(*a) or "null")
+
+
+def tool(name):
+    """Outil de sdlc-contract : PATH (session Claude, plugin installé), sinon dossier frère (clone de la marketplace)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    sibling = Path(__file__).resolve().parents[2] / "sdlc-contract" / "bin" / name
+    if sibling.exists():
+        return str(sibling)
+    raise Fail(f"{name} introuvable (plugin sdlc-contract installé ?)")
+
+
+def parse_block(body):
+    m = re.search(r"<!--\s*sdlc:begin\s*-->(.*?)<!--\s*sdlc:end\s*-->", body or "", re.S)
+    if not m:
+        return None
+    return {k.strip(): v.strip() for k, v in (l.split(":", 1) for l in m.group(1).strip().splitlines() if ":" in l)}
+
+
+def ctype(subject):
+    m = TYPE_RE.match(subject)
+    return m.group(1) if m else ""
+
+
+def adjudicate(verdict):
+    """approve ⇔ le relecteur approuve ET aucun finding blocker/major. Retourne (verdict effectif, ajusté ?)."""
+    blocking = [f for f in verdict["findings"] if f["severity"] in ("blocker", "major")]
+    effective = "approve" if verdict["verdict"] == "approve" and not blocking else "changes_requested"
+    return effective, effective != verdict["verdict"]
+
+
+def check_verdict(v):
+    """Contrôle minimal du schéma verdict.schema.json (le contrat est porté par sdlc-contract)."""
+    if not isinstance(v, dict) or v.get("verdict") not in ("approve", "changes_requested") or not str(v.get("summary", "")).strip():
+        raise Fail("verdict invalide : verdict (approve|changes_requested) et summary obligatoires")
+    if not isinstance(v.get("findings"), list):
+        raise Fail("verdict invalide : findings doit être une liste")
+    for f in v["findings"]:
+        if not isinstance(f, dict) or f.get("axis") not in AXES or f.get("severity") not in SEVERITIES \
+                or not str(f.get("issue", "")).strip() or not str(f.get("evidence", "")).strip():
+            raise Fail(f"finding invalide (axis, severity, issue et evidence obligatoires) : {json.dumps(f, ensure_ascii=False)[:300]}")
+
+
+# ---------------------------------------------------------------- GitHub
+
+def repo_name():
+    return ghjson("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
+
+
+def default_branch():
+    head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+    return head.split("/", 1)[1] if "/" in head else "main"
+
+
+def transition(repo, n, remove=(), add=(), comment=None):
+    args = ["issue", "edit", str(n), "--repo", repo]
+    for label in remove:
+        args += ["--remove-label", label]
+    for label in add:
+        args += ["--add-label", label]
+    gh(*args, check=False)
+    if comment:
+        gh("issue", "comment", str(n), "--repo", repo, "--body", comment, check=False)
+
+
+def eligible(repo):
+    """Issues ready (plus ancienne d'abord) dont les dépendances sont fermées : [(issue, bloc ou None)]."""
+    issues = ghjson("issue", "list", "--repo", repo, "--label", "ready", "--state", "open",
+                    "--json", "number,title,body", "--limit", "100") or []
+    out = []
+    for it in sorted(issues, key=lambda i: i["number"]):
+        blk = parse_block(it["body"])
+        deps = [int(x) for x in (blk or {}).get("depends_on_issues", "").split(",") if x.strip()]
+        if all(ghjson("issue", "view", str(d), "--repo", repo, "--json", "state")["state"] == "CLOSED" for d in deps):
+            out.append((it, blk))
+    return out
+
+
+def busy(repo):
+    return bool(ghjson("issue", "list", "--repo", repo, "--label", "in-progress", "--state", "open",
+                       "--json", "number", "--limit", "1"))
+
+
+def current():
+    """Contexte déduit de la branche feat/<id> : (repo, id, numéro d'issue, titre, branche par défaut)."""
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    if not branch.startswith("feat/"):
+        raise Fail(f"branche courante {branch!r} : lancer `sdlc-gate start` d'abord")
+    fid = branch[len("feat/"):]
+    repo = repo_name()
+    rows = ghjson("issue", "list", "--repo", repo, "--state", "all", "--limit", "200",
+                  "--search", f'"[{fid}]" in:title', "--json", "number,title") or []
+    issue = next((r for r in rows if r["title"].startswith(f"[{fid}]")), None)
+    if not issue:
+        raise Fail(f"aucune issue [{fid}] sur {repo}")
+    return repo, fid, issue["number"], issue["title"], default_branch()
+
+
+def escalate(repo, fid, n, default, message):
+    if fid and git("rev-list", "--count", f"origin/{default}..HEAD", check=False) not in ("", "0"):
+        git("push", "origin", f"HEAD:refs/heads/feat/{fid}", check=False)
+    where = f" (feature `{fid}`, branche `feat/{fid}`)" if fid else ""
+    transition(repo, n, ["in-progress", "ready"], ["needs-human"], f"⛔ **Intervention requise**{where} :\n\n{message}")
+
+
+# ---------------------------------------------------------------- vérifications
+
+def load_check():
+    """Commandes de `.claude/check.json` : {"check", "arch"} ; Fail si absente, illisible ou encore au gabarit."""
+    f = Path(".claude/check.json")
+    if not f.is_file():
+        raise Fail(".claude/check.json est absent")
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        cmds = {k: data.get(k) for k in ("check", "arch")}
+    except (ValueError, AttributeError) as e:
+        raise Fail(f".claude/check.json illisible : {e}") from None
+    for k, cmd in cmds.items():
+        if not isinstance(cmd, str) or not cmd.strip() or cmd.strip() == PLACEHOLDER:
+            raise Fail(f'.claude/check.json : "{k}" est vide, absent ou encore au gabarit')
+    return {k: v.strip() for k, v in cmds.items()}
+
+
+def run_check(cmd):
+    """Exécute une commande du contrat dans le worktree, sans jeton : {ok, code, cmd, tail}."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_VARS}
+    try:
+        r = subprocess.run(cmd, shell=True, env=env, capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+        code, out = r.returncode, (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        code, out = 124, f"délai dépassé ({CHECK_TIMEOUT}s)\n{partial}"
+    return {"ok": code == 0, "code": code, "cmd": cmd, "tail": out.strip()[-CHECK_TAIL:]}
+
+
+def note(ref, sha):
+    return git("notes", f"--ref={ref}", "show", sha, check=False)
+
+
+def review_of(sha):
+    raw = note(REVIEW, sha)
+    return json.loads(raw) if raw else None
+
+
+def commits(base):
+    """Commits de la branche depuis la base : [(sha, type Conventional Commits, fichiers touchés)]."""
+    out = []
+    for sha in git("rev-list", "--reverse", f"{base}..HEAD").split():
+        subject = git("log", "-1", "--format=%s", sha)
+        files = set(git("diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines())
+        out.append((sha, ctype(subject), files))
+    return out
+
+
+def tdd_errors(cs):
+    errs = []
+    for i, (sha, typ, files) in enumerate(cs):
+        prev = cs[i - 1] if i else None
+        if typ == "test" and not note(RED, sha):
+            errs.append(f"{sha[:7]} : commit test sans rouge constaté (lancer `sdlc-gate tests-red` juste après ce commit)")
+        if typ == "feat" and not (prev and prev[1] == "test"):
+            errs.append(f"{sha[:7]} : commit feat non précédé d'un commit test")
+        if prev and prev[1] == "test" and files & prev[2]:
+            errs.append(f"{sha[:7]} : modifie des fichiers du commit de tests {prev[0][:7]} : {', '.join(sorted(files & prev[2]))[:300]}")
+    return errs
+
+
+def verify(fid, default):
+    if git("status", "--porcelain"):
+        raise Fail("arbre de travail non propre : commiter ou annuler les modifications")
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    paths = PROTECTED + [f"docs/features/{fid}/spec.md", f"docs/features/{fid}/brief.md"]
+    errs = [f"chemin protégé modifié : {p} (architecture, contrat de vérification, CI et cadrage ne changent que par l'humain)"
+            for p in git("diff", "--name-only", base, "HEAD", "--", *paths).splitlines()]
+    errs += tdd_errors(commits(base))
+    cmds = load_check()
+    for k in ("check", "arch"):
+        r = run_check(cmds[k])
+        if not r["ok"]:
+            errs.append(f"{k} rouge (`{r['cmd']}`, code {r['code']}) :\n{r['tail']}")
+    return errs
+
+
+# ---------------------------------------------------------------- sous-commandes
+
+def cmd_next(a):
+    if busy(a.repo):
+        print("une issue est déjà in-progress")
+        return 1
+    if not eligible(a.repo):
+        print("rien à traiter")
+        return 1
+    print("travail disponible")
+    return 0
+
+
+def cmd_start(_):
+    if git("status", "--porcelain"):
+        raise Fail("worktree non propre : démarrer depuis un worktree neuf")
+    repo = repo_name()
+    git("fetch", "origin", "--prune")
+    default = default_branch()
+    if busy(repo):
+        raise Fail("une issue est déjà in-progress : une seule à la fois par dépôt")
+    cands = eligible(repo)
+    if not cands:
+        print(json.dumps({"issue": None, "message": "rien à traiter"}, ensure_ascii=False))
+        return 1
+    issue, blk = cands[0]
+    n = issue["number"]
+    transition(repo, n, ["ready"], ["in-progress"], "🤖 Prise en charge par l'usine.")
+    fid = None
+    try:
+        if not blk or not blk.get("feature_id") or not blk.get("spec_sha"):
+            raise Fail("bloc `sdlc:begin` absent ou incomplet : republier via `sdlc-publish`.")
+        if blk.get("schema_version") not in SUPPORTED_SCHEMA:
+            raise Fail(f"schema_version {blk.get('schema_version')!r} non supporté (attendu {sorted(SUPPORTED_SCHEMA)}).")
+        fid, sha = blk["feature_id"], blk["spec_sha"]
+        resumed = bool(git("ls-remote", "--heads", "origin", f"feat/{fid}"))
+        git("switch", "--no-track", "-C", f"feat/{fid}", f"origin/feat/{fid}" if resumed else f"origin/{default}")
+        fdir = f"docs/features/{fid}"
+        if git("diff", "--name-only", sha, f"origin/{default}", "--", f"{fdir}/spec.md", f"{fdir}/brief.md"):
+            raise Fail(f"{fdir} a changé depuis sa publication ({sha[:7]}) : un changement de besoin = nouvelle unité.")
+        for argv in ([tool("sdlc-validate-spec"), fdir],
+                     [tool("sdlc-validate-architecture"), "--require-accepted", "docs/architecture"]):
+            r = subprocess.run(argv, capture_output=True, text=True)
+            if r.returncode:
+                raise Fail((r.stderr or r.stdout).strip()[:1500] + "\nCorriger sur le poste, commiter, puis remettre `ready`.")
+        load_check()
+    except Fail as e:
+        escalate(repo, fid, n, default, str(e))
+        raise Fail(f"issue #{n} escaladée en needs-human : {e}") from None
+    print(json.dumps({"issue": n, "title": issue["title"], "feature": fid, "branch": f"feat/{fid}", "resumed": resumed,
+                      "spec": f"{fdir}/spec.md", "brief": f"{fdir}/brief.md" if Path(fdir, "brief.md").exists() else None,
+                      "plan": f"{fdir}/plan.md", "default_branch": default}, ensure_ascii=False))
+    return 0
+
+
+def cmd_tests_red(_):
+    current()
+    if git("status", "--porcelain"):
+        raise Fail("arbre de travail non propre : commiter les tests d'abord")
+    head = git("rev-parse", "HEAD")
+    if ctype(git("log", "-1", "--format=%s", head)) != "test":
+        raise Fail("HEAD n'est pas un commit test(...) : commiter les tests seuls d'abord")
+    r = run_check(load_check()["check"])
+    if r["ok"]:
+        raise Fail("`check` est vert : les nouveaux tests doivent échouer avant l'implémentation")
+    git("notes", f"--ref={RED}", "add", "-f", "-m", f"rouge constaté (code {r['code']})", head)
+    print(f"rouge constaté sur {head[:7]} (code {r['code']})\n{r['tail'][-800:]}")
+    return 0
+
+
+def cmd_verify(_):
+    _, fid, _, _, default = current()
+    errs = verify(fid, default)
+    if errs:
+        print("\n".join(f"- {e}" for e in errs), file=sys.stderr)
+        return 1
+    print("OK : check et arch verts, chemins protégés intacts, TDD respecté")
+    return 0
+
+
+def cmd_review(_):
+    repo, fid, n, _, default = current()
+    try:
+        v = json.load(sys.stdin)
+    except ValueError as e:
+        raise Fail(f"verdict illisible : {e}") from None
+    check_verdict(v)
+    effective, adjusted = adjudicate(v)
+    head = git("rev-parse", "HEAD")
+    rec = {"verdict": effective, "declared": v["verdict"], "adjusted": adjusted, "summary": v["summary"], "findings": v["findings"]}
+    git("notes", f"--ref={REVIEW}", "add", "-f", "-m", json.dumps(rec, ensure_ascii=False), head)
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    rejected = sum(1 for sha, _, _ in commits(base) if (r := review_of(sha)) and r["verdict"] == "changes_requested")
+    print(json.dumps({"verdict": effective, "adjusted": adjusted, "rejections": rejected, "max": MAX_ITER}, ensure_ascii=False))
+    if effective == "approve":
+        return 0
+    if rejected >= MAX_ITER:
+        escalate(repo, fid, n, default, f"Revue non approuvée après {MAX_ITER} itérations. Dernier verdict : {v['summary']}\n"
+                                        f"Findings : notes `refs/notes/{REVIEW}` du clone serveur, branche `feat/{fid}`.")
+        return 3
+    return 2
+
+
+def pr_body(repo, fid, n, rec, iterations):
+    count = {(a, s): 0 for a in AXES for s in SEVERITIES}
+    for f in rec["findings"]:
+        count[(f["axis"], f["severity"])] += 1
+    rows = "\n".join(f"| {a} | " + " | ".join(str(count[(a, s)]) for s in SEVERITIES) + " |" for a in AXES)
+    minors = "\n".join(f"- [{f['axis']}] `{f['file']}:{f['line']}` — {f['issue']}" for f in rec["findings"]) or "- aucun"
+    base = f"https://github.com/{repo}/blob/feat/{fid}/docs/features/{fid}"
+    return f"""Closes #{n}
+
+Feature `{fid}` réalisée par l'usine : TDD vérifié (tests rouges constatés avant chaque `feat`), `check` et `arch` verts,
+revue approuvée après {iterations} itération(s). **Merge humain.**
+
+| Axe | blocker | major | minor |
+|-----|---------|-------|-------|
+{rows}
+
+Résumé du relecteur : {rec['summary']}
+
+Findings restants :
+{minors}
+
+Cadrage : [spec]({base}/spec.md) · [plan]({base}/plan.md) · [apprentissages](https://github.com/{repo}/blob/feat/{fid}/docs/learnings.md)
+"""
+
+
+def cmd_deliver(_):
+    repo, fid, n, title, default = current()
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    cs = commits(base)
+    reviewed = [i for i, (sha, _, _) in enumerate(cs) if review_of(sha)]
+    if not reviewed:
+        raise Fail("aucun verdict enregistré : `sdlc-gate review` d'abord")
+    last = reviewed[-1]
+    rec = review_of(cs[last][0])
+    if rec["verdict"] != "approve":
+        raise Fail(f"dernier verdict ({cs[last][0][:7]}) : {rec['verdict']}")
+    allowed = {"docs/learnings.md", f"docs/features/{fid}/plan.md"}
+    later = set().union(*(files for _, _, files in cs[last + 1:]))
+    if later - allowed:
+        raise Fail(f"commits postérieurs à la revue hors apprentissages et plan : {', '.join(sorted(later - allowed))[:300]}")
+    errs = verify(fid, default)
+    if errs:
+        raise Fail("verify en échec :\n" + "\n".join(f"- {e}" for e in errs))
+    git("push", "origin", f"HEAD:refs/heads/feat/{fid}")
+    existing = ghjson("pr", "list", "--repo", repo, "--head", f"feat/{fid}", "--state", "open", "--json", "number")
+    if existing:
+        pr = str(existing[0]["number"])
+    else:
+        url = gh("pr", "create", "--repo", repo, "--base", default, "--head", f"feat/{fid}", "--title", title,
+                 "--body-file", "-", input=pr_body(repo, fid, n, rec, len(reviewed)))
+        pr = url.rstrip("/").split("/")[-1]
+    transition(repo, n, ["in-progress"], ["in-review"],
+               f"✅ PR #{pr} ouverte : TDD vérifié, check et arch verts, revue approuvée. **À fusionner.**")
+    print(f"PR #{pr} ouverte, issue #{n} en in-review")
+    return 0
+
+
+def cmd_escalate(a):
+    repo, fid, n, _, default = current()
+    escalate(repo, fid, n, default, a.message)
+    print(f"issue #{n} en needs-human")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("next").add_argument("--repo", required=True)
+    for name in ("start", "tests-red", "verify", "review", "deliver"):
+        sub.add_parser(name)
+    sub.add_parser("escalate").add_argument("message")
+    a = ap.parse_args()
+    handler = {"next": cmd_next, "start": cmd_start, "tests-red": cmd_tests_red, "verify": cmd_verify,
+               "review": cmd_review, "deliver": cmd_deliver, "escalate": cmd_escalate}[a.cmd]
+    try:
+        return handler(a)
+    except Fail as e:
+        print(f"sdlc-gate {a.cmd} : {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
