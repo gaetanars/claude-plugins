@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_sdlc_validate_architecture import write_architecture
 from tests.test_sdlc_validate_spec import AMB, BRIEF, SPEC
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +43,7 @@ class Publish(unittest.TestCase):
         sh("git", "clone", "-q", str(self.remote), str(seed))
         sh("git", "checkout", "-q", "-b", "main", cwd=seed)
         (seed / "CLAUDE.md").write_text("# p\n")
+        write_architecture(seed)
         sh(*G, "add", "-A", cwd=seed)
         sh(*G, "commit", "-q", "-m", "init", cwd=seed)
         sh("git", "push", "-q", "origin", "main", cwd=seed)
@@ -104,6 +106,30 @@ class Publish(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("depends_on_issues: 1", self.state()["issues"]["2"]["body"])
 
+    def test_architecture_gate(self):
+        feature(self.proj, "0001-hello")
+        arch = self.proj / "docs/architecture/ARCHITECTURE.md"
+        # modifiée mais non commitée : le serveur lit le dépôt
+        arch.write_text(arch.read_text() + "\nAjout.\n")
+        r = self.pub("publish", "0001-hello")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("non commités", r.stderr)
+        sh("git", "checkout", "--", "docs/architecture", cwd=self.proj)
+        # draft
+        arch.write_text(arch.read_text().replace("status: accepted", "status: draft"))
+        sh(*G, "commit", "-qam", "draft", cwd=self.proj)
+        r = self.pub("publish", "0001-hello")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("status draft", r.stderr)
+        self.assertIn("/sdlc-framing:architect", r.stderr)
+        # absente
+        sh("git", "rm", "-rq", "docs/architecture", cwd=self.proj)
+        sh(*G, "commit", "-qm", "sans architecture", cwd=self.proj)
+        r = self.pub("publish", "0001-hello")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absent", r.stderr)
+        self.assertEqual(self.state()["issues"], {})
+
     def test_refuses_non_default_branch_and_dry_run(self):
         feature(self.proj, "0001-hello")
         dry = self.pub("publish", "0001-hello", "--dry-run")
@@ -137,8 +163,9 @@ class Publish(unittest.TestCase):
         self.assertEqual(s.returncode, 0, s.stderr)
         self.assertIn("## Commandes", (fresh / "CLAUDE.md").read_text())
         self.assertTrue((fresh / "docs/features/.gitkeep").exists())
-        self.assertEqual(json.loads((fresh / ".claude/check.json").read_text()), {"check": "A_RENSEIGNER"})
+        self.assertEqual(json.loads((fresh / ".claude/check.json").read_text()), {"check": "A_RENSEIGNER", "arch": "A_RENSEIGNER"})
         self.assertIn("check.json créé", s.stdout)
+        self.assertIn("/sdlc-framing:architect init", s.stdout)
         # check.json existant : inchangé
         (fresh / ".claude/check.json").write_text('{"check": "make test"}\n')
         s = subprocess.run([sys.executable, str(INIT), "scaffold"], cwd=fresh, capture_output=True, text=True)

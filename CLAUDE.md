@@ -31,7 +31,8 @@ Règles :
 - Les appels `claude` utilisent `--setting-sources user` (ignore hooks/env/`.mcp.json` du dépôt cible), `--permission-mode dontAsk`, `--max-turns` par rôle (`ROLES` dans `lib/sdlc_common.py`, mêmes valeurs que le frontmatter) et un sandbox natif obligatoire. `--bare` est écarté : il désactive les hooks du plugin.
 
 Couplages à relire ensemble :
-- `.claude/check.json` (`{"check": "<cmd>"}`) : `sdlc-init-repo scaffold` (gabarit `A_RENSEIGNER`), `sdlc-run` (`load_check`, `run_check`, gate), agents `implementer`/`reviewer-*`.
+- `.claude/check.json` (`{"check": "<cmd>", "arch": "<cmd>"}`) : `sdlc-init-repo scaffold` (gabarit `A_RENSEIGNER`), `sdlc-run` (`load_check`, `run_check`, gate), agents `implementer`/`reviewer-*`, skill `architect`.
+- Architecture cadrée (`docs/architecture/{ARCHITECTURE.md,rules.json,native/}`, `docs/adr/`) : `sdlc-validate-architecture` (format de référence), skill `architect` (écrit), `po` (garde-fou avant découpage), `sdlc-publish` (exige accepté + commité), `sdlc-run` (`validate_architecture`, `protected_changes`), `guard.py` (chemin protégé), agents `planner` (remonte les décisions « Exige un ADR » en ambiguïté) et `implementer`. Aucun fichier de configuration native hors `docs/architecture/native/`. Aucun code par langage dans le SDLC : l'outil natif est choisi au cadrage.
 - Bloc d'issue `sdlc:begin` : `sdlc-publish` ↔ `sdlc-run` (`parse_block`).
 - `schema_version` : `sdlc-validate-spec`, `sdlc-run` (`SUPPORTED_SCHEMA`), `sdlc-publish`.
 - `schemas/verdict.schema.json` (contrat) : reviewers, `adjudicate`, `sdlc-retro`.

@@ -11,15 +11,16 @@ Tu ne décides rien à la place de l'utilisateur ; tu proposes avec une recomman
 
 ## Déroulé
 
-1. **Lis** `docs/features/<id>/brief.md` (ou demande-le), `CLAUDE.md`, `docs/adr/` et le code concerné.
+0. **Garde-fou architecture** : lance `sdlc-validate-architecture --require-accepted docs/architecture`. Absent, invalide ou `draft` : **arrête-toi** et renvoie vers `/sdlc-framing:architect init`. Rien ne se découpe sans architecture cadrée.
+1. **Lis** `docs/features/<id>/brief.md` (ou demande-le), `CLAUDE.md`, `docs/architecture/ARCHITECTURE.md`, `docs/adr/` et le code concerné.
 2. **Découpe** en unités de travail. Une unité :
    - livre un résultat observable et testable de façon autonome ;
    - tient dans une PR relisible (ordre de grandeur : ≤ 400 lignes de diff, une poignée de fichiers) ;
-   - a un seul « pourquoi » et aucune décision d'architecture ouverte ;
+   - a un seul « pourquoi » et aucune décision structurante ouverte : confronte chaque unité à la liste « Exige un ADR » de `ARCHITECTURE.md`. Si l'unité impose une telle décision que ni l'architecture ni une ADR `Accepté` ne couvre, **arrête cette unité** et renvoie vers `/sdlc-framing:architect adr <sujet>` (ou `revise` si elle contredit l'existant) avant d'écrire la spec ;
    - déclare ses dépendances (`depends_on`) sur d'autres unités, sans cycle.
    Présente le découpage et le graphe de dépendances ; fais-les valider avant d'aller plus loin.
 3. **Pour chaque unité, lève TOUTES les ambiguïtés avant d'écrire la spec.** Passe en revue : nominal, erreurs, limites et volumes,
-   données et formats, interfaces, sécurité et permissions, performance, compatibilité et migration, observabilité, tests attendus,
+   données et formats, interfaces, sécurité et permissions, performance, compatibilité et migration, conformité aux modules et règles d'architecture, observabilité, tests attendus,
    déploiement. Pose les questions par salves de 3 maximum. Consigne chaque Q/R dans `ambiguities.md` au format
    `- [x] Qn: question → R: réponse (date)`. Aucune supposition silencieuse : si l'utilisateur ne sait pas, propose un défaut
    et fais-le confirmer, puis consigne-le.

@@ -17,6 +17,7 @@ Tu ne modifies rien. Le résultat du `check` (exécuté par l'orchestrateur, ver
 - **Qualité des tests** : indépendants, déterministes, sans dépendance à l'ordre ou au temps ; un test affaibli, supprimé ou ignoré pour
   « faire passer » est un blocker.
 - **Respect du plan** : écarts non justifiés, étapes manquantes.
+- Une règle d'architecture contournée (exclusion, ignore, baseline étendue, configuration native modifiée) est un blocker.
 - Tout changement de CI, de configuration de build ou de `CLAUDE.md` non demandé par la spec est un blocker.
 
 ## Règles de verdict

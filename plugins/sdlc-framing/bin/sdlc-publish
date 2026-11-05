@@ -51,12 +51,31 @@ def frontmatter(text):
     return fm, (m.group(2) if m else text)
 
 
-def find_validator():
-    p = shutil.which("sdlc-validate-spec")
+def find_tool(name):
+    p = shutil.which(name)
     if p:
         return p
-    sibling = Path(__file__).resolve().parents[2] / "sdlc-contract" / "bin" / "sdlc-validate-spec"
+    sibling = Path(__file__).resolve().parents[2] / "sdlc-contract" / "bin" / name
     return str(sibling) if sibling.exists() else None
+
+
+def find_validator():
+    return find_tool("sdlc-validate-spec")
+
+
+def check_architecture(root: Path):
+    """L'architecture doit être cadrée, acceptée et commitée (le serveur lit le dépôt, pas le poste)."""
+    validator = find_tool("sdlc-validate-architecture")
+    if not validator:
+        sys.exit("sdlc-validate-architecture introuvable (plugin sdlc-contract installé ?)")
+    v = subprocess.run([validator, "--require-accepted", str(root / "docs" / "architecture")], capture_output=True, text=True)
+    if v.returncode:
+        sys.exit((v.stderr.strip() or v.stdout.strip()) + "\n→ /sdlc-framing:architect")
+    dirty = run("git", "status", "--porcelain", "--", "docs/architecture", "docs/adr", ".claude/check.json")
+    if dirty:
+        sys.exit("architecture, ADR ou .claude/check.json non commités (le serveur lit le dépôt) :\n" + dirty)
+    if not run("git", "ls-files", "--", "docs/architecture/rules.json"):
+        sys.exit("docs/architecture/rules.json n'est pas suivi par git : commit d'abord")
 
 
 def publish(fid: str, dry: bool):
@@ -71,6 +90,7 @@ def publish(fid: str, dry: bool):
     v = subprocess.run([validator, str(fdir)], capture_output=True, text=True)
     if v.returncode:
         sys.exit(v.stderr.strip() or v.stdout.strip())
+    check_architecture(root)
 
     default = run("git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).split("/", 1)[-1] or "main"
     current = run("git", "rev-parse", "--abbrev-ref", "HEAD")

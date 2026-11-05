@@ -8,11 +8,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.test_sdlc_validate_architecture import write_architecture
+
 ROOT = Path(__file__).resolve().parents[1]
 RUN = ROOT / "plugins/sdlc-factory/bin/sdlc-run"
 FAKEBIN = Path(__file__).parent / "sdlc_fakebin"
 REPO = "owner/proj"
 CHECK = "test -f hello.txt && ! grep -q BAD hello.txt"  # vert dès que l'implementer a écrit hello.txt sans marqueur BAD
+ARCH = "! grep -q FORBIDDEN hello.txt"  # « règle d'architecture » factice
 FID = "0001-hello"
 
 SPEC = f"""---
@@ -84,7 +87,8 @@ class E2E(unittest.TestCase):
         fdir.mkdir(parents=True)
         (seed / "CLAUDE.md").write_text("# proj\n## Commandes\n- Tests : `true`\n")
         (seed / ".claude").mkdir()
-        (seed / ".claude" / "check.json").write_text(json.dumps({"check": CHECK}))
+        (seed / ".claude" / "check.json").write_text(json.dumps({"check": CHECK, "arch": ARCH}))
+        write_architecture(seed)
         for n, t in (("spec", SPEC), ("brief", BRIEF), ("ambiguities", AMB)):
             (fdir / f"{n}.md").write_text(t, encoding="utf-8")
         g = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
@@ -130,18 +134,24 @@ class E2E(unittest.TestCase):
     def run_json(self):
         return json.loads(self.branch_file(f"docs/features/{FID}/run.json"))
 
-    def push_check(self, cmd):
-        """Remplace (ou supprime si None) .claude/check.json sur la branche par défaut du dépôt distant."""
+    def push_seed(self, mutate):
+        """Applique `mutate(seed)` puis pousse sur la branche par défaut du dépôt distant."""
         seed = self.t / "seed"
-        f = seed / ".claude" / "check.json"
-        if cmd is None:
-            f.unlink()
-        else:
-            f.write_text(json.dumps({"check": cmd}))
+        mutate(seed)
         g = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
         sh(*g, "add", "-A", cwd=seed)
-        sh(*g, "commit", "-q", "-m", "check", cwd=seed)
+        sh(*g, "commit", "-q", "-m", "maj", cwd=seed)
         sh("git", "push", "-q", "origin", "main", cwd=seed)
+
+    def push_check(self, cmd, arch=ARCH):
+        """Remplace (ou supprime si cmd est None) .claude/check.json."""
+        def mutate(seed):
+            f = seed / ".claude" / "check.json"
+            if cmd is None:
+                f.unlink()
+            else:
+                f.write_text(json.dumps({k: v for k, v in (("check", cmd), ("arch", arch)) if v is not None}))
+        self.push_seed(mutate)
 
     # -- scénarios
     def test_happy_path(self):
@@ -348,10 +358,79 @@ class E2E(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         st = self.state()
         self.assertEqual(st["issues"]["1"]["labels"], ["needs-human"])
-        self.assertIn("Check toujours rouge", st["issues"]["1"]["comments"][-1]["body"])
+        self.assertIn("Gate toujours rouge", st["issues"]["1"]["comments"][-1]["body"])
         self.assertEqual(self.calls("reviewer-security"), [])
         self.assertEqual(len(self.calls("implementer")), 3)  # compte dans MAX_ITER
         self.assertEqual(st["prs"], {})
+
+    def test_arch_red_then_green(self):
+        self.scenario("arch_red_then_green")
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        rj = self.run_json()
+        self.assertEqual(len(rj["iterations"]), 2)
+        self.assertTrue(rj["iterations"][0]["check"]["ok"])
+        self.assertFalse(rj["iterations"][0]["arch"]["ok"])
+        self.assertEqual(rj["iterations"][0]["verdicts"], {})
+        self.assertTrue(rj["iterations"][1]["arch"]["ok"])
+        self.assertEqual(len(self.calls("reviewer-security")), 1)  # aucune revue sur l'itération rouge
+        second = self.calls("implementer")[1]["prompt"]
+        self.assertIn('"axis": "arch"', second)
+        self.assertNotIn('"axis": "check"', second)
+        self.assertIn("Contrôle d'architecture", self.calls("reviewer-security")[0]["prompt"])
+        self.assertEqual(self.state()["issues"]["1"]["labels"], ["in-review"])
+
+    def test_both_gates_red_reported_together(self):
+        self.push_check("false", arch="false")
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Gate toujours rouge", self.state()["issues"]["1"]["comments"][-1]["body"])
+        p = self.calls("implementer")[1]["prompt"]
+        self.assertIn('"axis": "check"', p)
+        self.assertIn('"axis": "arch"', p)
+
+    def test_architecture_absent_escalates(self):
+        self.push_seed(lambda seed: shutil.rmtree(seed / "docs" / "architecture"))
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 1)
+        st = self.state()
+        self.assertEqual(st["issues"]["1"]["labels"], ["needs-human"])
+        self.assertIn("/sdlc-framing:architect", st["issues"]["1"]["comments"][-1]["body"])
+        self.assertEqual(self.calls(), [])
+
+    def test_architecture_draft_escalates(self):
+        def draft(seed):
+            f = seed / "docs" / "architecture" / "ARCHITECTURE.md"
+            f.write_text(f.read_text().replace("status: accepted", "status: draft"))
+        self.push_seed(draft)
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.state()["issues"]["1"]["labels"], ["needs-human"])
+        self.assertIn("status draft", self.state()["issues"]["1"]["comments"][-1]["body"])
+        self.assertEqual(self.calls(), [])
+
+    def test_missing_arch_command_escalates(self):
+        self.push_check(CHECK, arch=None)
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual(self.state()["issues"]["1"]["labels"], ["needs-human"])
+        self.assertIn('"arch"', self.state()["issues"]["1"]["comments"][-1]["body"])
+        self.assertEqual(self.calls(), [])
+
+    def test_implementer_touching_architecture_escalates(self):
+        self.scenario("touch_arch")
+        r = self.run_sdlc()
+        self.assertEqual(r.returncode, 1)
+        st = self.state()
+        self.assertEqual(st["issues"]["1"]["labels"], ["needs-human"])
+        self.assertIn("fichiers verrouillés", st["issues"]["1"]["comments"][-1]["body"])
+        self.assertIn("docs/architecture/ARCHITECTURE.md", st["issues"]["1"]["comments"][-1]["body"])
+        self.assertEqual(self.calls("reviewer-security"), [])
+        self.assertEqual(st["prs"], {})
+
+    def test_planner_contract_escalates_structuring_decisions(self):
+        agent = (ROOT / "plugins/sdlc-factory/agents/planner.md").read_text()
+        self.assertIn("Exige un ADR", agent)  # le planner remonte les décisions structurantes au lieu de les trancher
 
     def test_check_runs_without_secrets(self):
         self.push_check('test -z "$GH_TOKEN" && test -z "$ANTHROPIC_API_KEY" && test -f hello.txt')

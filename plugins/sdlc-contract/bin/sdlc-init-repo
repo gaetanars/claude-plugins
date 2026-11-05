@@ -3,7 +3,7 @@
 
   sdlc-init-repo scaffold
       Dans un dépôt git : crée docs/features, docs/adr, un CLAUDE.md (gabarit) et .claude/check.json
-      (gabarit, à renseigner) s'ils n'existent pas.
+      (gabarit, à renseigner) s'ils n'existent pas. L'architecture se cadre ensuite avec /sdlc-framing:architect.
 
   sdlc-init-repo github OWNER/REPO [--branch main] [--ci-context NOM]... [--automerge] [--apply]
       Labels du flux, suppression des branches fusionnées, protection de branche
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CHECK_TEMPLATE = '{\n  "check": "A_RENSEIGNER"\n}\n'  # valeur gabarit : sdlc-run escalade tant qu'elle reste en place
+CHECK_TEMPLATE = '{\n  "check": "A_RENSEIGNER",\n  "arch": "A_RENSEIGNER"\n}\n'  # valeur gabarit : sdlc-run escalade tant qu'elle reste en place
 LABELS = {
     "ready": ("0E8A16", "Cadrage publié : à traiter par l'automate"),
     "in-progress": ("FBCA04", "Pris en charge par l'automate (verrou)"),
@@ -53,7 +53,9 @@ def scaffold():
     else:
         check.parent.mkdir(parents=True, exist_ok=True)
         check.write_text(CHECK_TEMPLATE, encoding="utf-8")
-        print('.claude/check.json créé : renseigne "check" (tests + lint + typecheck, code de sortie 0 = vert), obligatoire')
+        print('.claude/check.json créé : renseigne "check" (tests + lint + typecheck) et "arch" (contrôle d\'architecture), obligatoires')
+    if not (root / "docs" / "architecture" / "rules.json").exists():
+        print("architecture non cadrée : lance /sdlc-framing:architect init (obligatoire avant toute publication)")
     print(f"scaffold OK dans {root}")
 
 

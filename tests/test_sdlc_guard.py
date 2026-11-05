@@ -56,7 +56,8 @@ class Guard(unittest.TestCase):
 
     def test_implementer_blocked_paths(self):
         for p in ["/etc/passwd", "../outside.txt", ".git/config", ".github/workflows/ci.yml", ".claude/settings.json",
-                  "docs/features/0001-x/spec.md", "docs/features/0001-x/plan.md", "docs/adr/0001-x.md"]:
+                  "docs/features/0001-x/spec.md", "docs/features/0001-x/plan.md", "docs/adr/0001-x.md",
+                  "docs/architecture/rules.json", "docs/architecture/native/archtool.cfg"]:
             self.deny("Write", {"file_path": p})
         self.deny("Edit", {"file_path": str(self.extra / "x")})  # lisible mais pas inscriptible
 

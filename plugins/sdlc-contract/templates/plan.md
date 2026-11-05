@@ -19,6 +19,10 @@ Chaque étape est petite, vérifiable, et se termine par un commit.
 |----|----------|---------|
 | CA-1 | 1 | test_xxx |
 
+## Conformité à l'architecture
+Modules touchés (noms de `docs/architecture/rules.json`), règles de dépendance concernées, ADR existantes appliquées.
+Aucune décision structurante nouvelle : sinon elle est remontée en ambiguïté, pas tranchée ici.
+
 ## Risques et points de vigilance
 Ce qui peut mal tourner, comment le détecter.
 

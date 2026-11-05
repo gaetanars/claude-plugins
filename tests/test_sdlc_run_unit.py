@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.test_sdlc_validate_architecture import write_architecture
+
 sys.dont_write_bytecode = True  # pas de __pycache__ dans plugins/*/bin et lib
 
 RUN = Path(__file__).resolve().parents[1] / "plugins/sdlc-factory/bin/sdlc-run"
@@ -85,12 +87,46 @@ class Pure(unittest.TestCase):
             sdlc_run.load_check(d)
         (d / ".claude").mkdir()
         f = d / ".claude" / "check.json"
-        for bad in ("pas du json", '{"check": ""}', '{"check": "A_RENSEIGNER"}', '{"check": 3}', "[]", "{}"):
+        for bad in ("pas du json", '{"check": "", "arch": "x"}', '{"check": "A_RENSEIGNER", "arch": "x"}', '{"check": 3, "arch": "x"}',
+                    "[]", "{}", '{"check": "make test"}', '{"check": "make test", "arch": "A_RENSEIGNER"}',
+                    '{"check": "make test", "arch": " "}'):
             f.write_text(bad)
             with self.assertRaises(ValueError, msg=bad):
                 sdlc_run.load_check(d)
-        f.write_text('{"check": " make test "}')
-        self.assertEqual(sdlc_run.load_check(d), "make test")
+        f.write_text('{"check": " make test ", "arch": "make arch"}')
+        self.assertEqual(sdlc_run.load_check(d), {"check": "make test", "arch": "make arch"})
+
+    def test_validate_architecture(self):
+        d = Path(tempfile.mkdtemp())
+        with self.assertRaises(ValueError):
+            sdlc_run.validate_architecture(d)
+        write_architecture(d)
+        sdlc_run.validate_architecture(d)
+        write_architecture(d, status="draft")
+        with self.assertRaisesRegex(ValueError, "draft"):
+            sdlc_run.validate_architecture(d)
+
+    def test_protected_changes(self):
+        d = Path(tempfile.mkdtemp())
+        g = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+        (d / "a.txt").write_text("1")
+        subprocess.run([*g, "-C", str(d), "add", "-A"], check=True)
+        subprocess.run([*g, "-C", str(d), "commit", "-qm", "1"], check=True)
+        before = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        (d / "a.txt").write_text("2")
+        subprocess.run([*g, "-C", str(d), "commit", "-qam", "2"], check=True)
+        head = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(sdlc_run.protected_changes(d, before, head), [])
+        (d / ".claude").mkdir()
+        (d / ".claude" / "check.json").write_text("{}")
+        (d / "docs" / "architecture").mkdir(parents=True)
+        (d / "docs" / "architecture" / "rules.json").write_text("{}")
+        subprocess.run([*g, "-C", str(d), "add", "-A"], check=True)
+        subprocess.run([*g, "-C", str(d), "commit", "-qm", "3"], check=True)
+        head2 = subprocess.run(["git", "-C", str(d), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(sorted(sdlc_run.protected_changes(d, head, head2)),
+                         [".claude/check.json", "docs/architecture/rules.json"])
 
     def test_run_check(self):
         d = Path(tempfile.mkdtemp())
@@ -152,6 +188,13 @@ class RetroCollect(unittest.TestCase):
         self.assertEqual(by["0002-failed"]["findings"][0]["issue"], "secret en clair")
         self.assertEqual(by["0001-merged"]["outcome"], "needs-human")  # dédoublonné, le plus récent
         self.assertEqual(len(runs), 2)
+        self.assertEqual(by["0002-failed"]["gates_failed"], 0)
+
+    def test_gates_failed(self):
+        data = {"iterations": [{"check": {"ok": False}, "arch": {"ok": True}}, {"check": {"ok": True}, "arch": {"ok": False}},
+                               {"check": {"ok": True}, "arch": {"ok": True}}, 1]}
+        self.assertEqual(sdlc_retro.gates_failed(data), 2)
+        self.assertEqual(sdlc_retro.gates_failed({}), 0)
 
 
 if __name__ == "__main__":

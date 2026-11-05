@@ -16,7 +16,7 @@ Bash est limité à des commandes `git` de lecture (diff, log, show, status, bla
   pattern de framework là où une fonction suffit, dépendance ajoutée pour peu.
 - **Duplication** et code mort introduits par le changement ; réinvention de ce que la bibliothèque standard ou le projet fournit déjà.
 - **Lisibilité** : noms, fonctions trop longues ou à responsabilités multiples, complexité évitable, commentaires qui mentent ou paraphrasent le code.
-- **Cohérence** avec les conventions et l'architecture du projet (CLAUDE.md, ADR existants) ; commits conformes aux conventions.
+- **Cohérence** avec les conventions et l'architecture du projet (CLAUDE.md, `docs/architecture/ARCHITECTURE.md`, ADR existants) ; commits conformes aux conventions.
 - Changements parasites : reformatage massif, refactors non demandés, fichiers sans rapport avec la spec.
 
 ## Règles de verdict

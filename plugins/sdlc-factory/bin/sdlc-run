@@ -5,8 +5,9 @@
 Usage : sdlc-run [--repo OWNER/REPO]... [--dry-run]
 Dépôts : --repo, sinon le fichier ~/.config/sdlc/repos : un `OWNER/REPO` par ligne, suivi de `automerge`
 pour armer l'auto-merge sur ce dépôt (opt-in ; sinon la PR est ouverte et le merge reste humain).
-Gate : la commande de `.claude/check.json` est exécutée par l'orchestrateur après chaque implémentation ;
-les revues ne sont lancées que si elle est verte.
+Gate : les commandes `check` et `arch` de `.claude/check.json` sont exécutées par l'orchestrateur après chaque
+implémentation ; les revues ne sont lancées que si les deux sont vertes. L'architecture (`docs/architecture/`) doit être
+cadrée et acceptée : sinon `needs-human`. Les agents ne la modifient jamais (contrôle déterministe sur le diff).
 """
 import argparse
 import concurrent.futures as cf
@@ -94,17 +95,33 @@ def read_repos(cli):
 
 
 def load_check(wt):
-    """Commande de `.claude/check.json` ; ValueError si absente, illisible ou encore au gabarit."""
+    """Commandes de `.claude/check.json` : {"check", "arch"} ; ValueError si absente, illisible ou encore au gabarit."""
     f = Path(wt) / ".claude" / "check.json"
     if not f.is_file():
         raise ValueError(".claude/check.json est absent")
     try:
-        cmd = json.loads(f.read_text(encoding="utf-8")).get("check")
+        data = json.loads(f.read_text(encoding="utf-8"))
+        cmds = {k: data.get(k) for k in ("check", "arch")}
     except (ValueError, AttributeError) as e:
         raise ValueError(f".claude/check.json illisible : {e}") from None
-    if not isinstance(cmd, str) or not cmd.strip() or cmd.strip() == CHECK_PLACEHOLDER:
-        raise ValueError('.claude/check.json : "check" est vide ou encore au gabarit')
-    return cmd.strip()
+    for k, cmd in cmds.items():
+        if not isinstance(cmd, str) or not cmd.strip() or cmd.strip() == CHECK_PLACEHOLDER:
+            raise ValueError(f'.claude/check.json : "{k}" est vide, absent ou encore au gabarit')
+    return {k: v.strip() for k, v in cmds.items()}
+
+
+def validate_architecture(wt):
+    """ValueError si docs/architecture/ n'est pas cadrée et acceptée."""
+    r = subprocess.run([str(CONTRACT / "bin" / "sdlc-validate-architecture"), "--require-accepted",
+                        str(Path(wt) / "docs" / "architecture")], capture_output=True, text=True)
+    if r.returncode:
+        raise ValueError((r.stderr or r.stdout).strip()[:1500])
+
+
+def protected_changes(wt, before, head):
+    """Fichiers de l'architecture ou du contrat de vérification modifiés entre deux commits (jamais permis à l'implementer)."""
+    out = git(wt, "diff", "--name-only", before, head, "--", "docs/architecture", ".claude")
+    return out.splitlines() if out else []
 
 
 def run_check(wt, cmd):
@@ -220,10 +237,16 @@ def setup(run):
     if "OK" not in v:
         raise Escalate("needs-human", "La spec ne passe pas `sdlc-validate-spec` : republier un cadrage valide.")
     try:
+        validate_architecture(run.wt)
+    except ValueError as e:
+        raise Escalate("needs-human", f"Architecture non cadrée ou non acceptée : {e}\nLance `/sdlc-framing:architect` "
+                                      "sur le poste, commite, puis remets le label `ready`.")
+    try:
         run.check_cmd = load_check(run.wt)
     except ValueError as e:
         raise Escalate("needs-human", f"{e}. Renseigne `.claude/check.json` sur la branche par défaut "
-                                      '(`{"check": "<tests + lint + typecheck>"}`), puis remets le label `ready`.')
+                                      '(`{"check": "<tests + lint + typecheck>", "arch": "<contrôle d\'architecture>"}`), '
+                                      "puis remets le label `ready`.")
 
 
 def apply_clarifications(run):
@@ -289,10 +312,12 @@ Des commits peuvent déjà exister sur la branche : vérifie `git log` et repren
     return p
 
 
-def reviewer_prompt(run, axis, head, check):
+def reviewer_prompt(run, axis, head, check, arch):
     return f"""Revue de la feature {run.id}, axe {axis}. Commit relu : {head}.
 Check exécuté par l'orchestrateur (`{check['cmd']}`) : vert, code 0. Fin de sortie :
 {check['tail'][-800:] or '(sortie vide)'}
+Contrôle d'architecture (`{arch['cmd']}`) : vert, code 0. Architecture de référence : docs/architecture/ARCHITECTURE.md et rules.json ; ADR : docs/adr/.
+Une règle contournée (exclusion, ignore, baseline étendue) est un blocker.
 Un test affaibli, supprimé ou ignoré pour faire passer ce check reste un blocker.
 Diff à relire : `git diff origin/{run.default}...{head} -- . ':(exclude)docs/features'`
 Spec : {run.fdir}/spec.md · Plan : {run.fdir}/plan.md · Contexte projet : CLAUDE.md · Conventions : {CONTRACT}/skills/sdlc-conventions/SKILL.md
@@ -304,9 +329,9 @@ def has_code_diff(run):
     return bool(git(run.wt, "diff", "--name-only", f"origin/{run.default}...HEAD", "--", ".", ":(exclude)docs"))
 
 
-def review_all(run, head, n, check):
+def review_all(run, head, n, check, arch):
     def one(axis):
-        return axis, run.claude(f"reviewer-{axis}", reviewer_prompt(run, axis, head, check),
+        return axis, run.claude(f"reviewer-{axis}", reviewer_prompt(run, axis, head, check, arch),
                                 CONTRACT / "schemas" / "verdict.schema.json", f"review-{n}")
     with cf.ThreadPoolExecutor(len(AXES)) as ex:
         results = dict(ex.map(one, AXES))
@@ -350,18 +375,25 @@ def build_loop(run):
         head = git(run.wt, "rev-parse", "HEAD")
         if head == before and not (n == 1 and has_code_diff(run)):
             raise Escalate("needs-human", f"L'implementer n'a produit aucun commit (itération {n}).")
-        check = run_check(run.wt, run.check_cmd)
-        rec_check = {"ok": check["ok"], "code": check["code"], "cmd": check["cmd"]}
-        if not check["ok"]:
-            run.iterations.append({"n": n, "head": head, "check": rec_check, "verdicts": {}, "findings": {},
+        touched = protected_changes(run.wt, before, head)
+        if touched:
+            raise Escalate("needs-human", f"L'implementer a modifié des fichiers verrouillés ({', '.join(touched[:5])}) : "
+                                          "architecture et contrat de vérification ne se changent que par un cadrage humain.")
+        gates = {"check": run_check(run.wt, run.check_cmd["check"]), "arch": run_check(run.wt, run.check_cmd["arch"])}
+        rec = {k: {"ok": g["ok"], "code": g["code"], "cmd": g["cmd"]} for k, g in gates.items()}
+        red = {k: g for k, g in gates.items() if not g["ok"]}
+        if red:
+            run.iterations.append({"n": n, "head": head, **rec, "verdicts": {}, "findings": {},
                                    "implementer_status": res["status"], "deviations": res["deviations"]})
-            run.event(f"itération {n} : check rouge (code {check['code']}), pas de revue")
-            findings = [{"axis": "check", "severity": "blocker", "file": "", "line": 0,
-                         "issue": f"`{check['cmd']}` est rouge (code {check['code']})",
-                         "evidence": check["tail"], "suggestion": "corriger le code, jamais affaiblir un test ou le check"}]
+            names = ", ".join("%s rouge (code %s)" % (k, g["code"]) for k, g in red.items())
+            run.event(f"itération {n} : {names}, pas de revue")
+            findings = [{"axis": k, "severity": "blocker", "file": "", "line": 0,
+                         "issue": f"`{g['cmd']}` est rouge (code {g['code']})", "evidence": g["tail"],
+                         "suggestion": "corriger le code ; ne jamais affaiblir un test, le check ou une règle d'architecture"}
+                        for k, g in red.items()]
             continue
-        stored = review_all(run, head, n, check)
-        run.iterations.append({"n": n, "head": head, "check": rec_check,
+        stored = review_all(run, head, n, gates["check"], gates["arch"])
+        run.iterations.append({"n": n, "head": head, **rec,
                                "verdicts": {a: r["verdict"] for a, r in stored.items()},
                                "findings": {a: len(r["findings"]) for a, r in stored.items()},
                                "implementer_status": res["status"], "deviations": res["deviations"]})
@@ -370,9 +402,9 @@ def build_loop(run):
             return git(run.wt, "rev-parse", "HEAD")
         findings = collect_findings(stored)
     last = run.iterations[-1]
-    if not last["check"]["ok"]:
-        raise Escalate("needs-human", f"Check toujours rouge après {MAX_ITER} itérations (`{last['check']['cmd']}`, code {last['check']['code']}). "
-                                      f"Branche `{run.branch}`.")
+    red = [f"{k} (`{last[k]['cmd']}`, code {last[k]['code']})" for k in ("check", "arch") if not last[k]["ok"]]
+    if red:
+        raise Escalate("needs-human", f"Gate toujours rouge après {MAX_ITER} itérations : {', '.join(red)}. Branche `{run.branch}`.")
     raise Escalate("needs-human", f"Revues non approuvées après {MAX_ITER} itérations : {last['verdicts']}. "
                                   f"Détails dans docs/features/{run.id}/reviews/ sur la branche `{run.branch}`.")
 
@@ -402,7 +434,7 @@ def deliver(run):
     merge = "auto-merge armé une fois la CI requise verte" if run.automerge else "merge humain"
     body = f"""Closes #{run.n}
 
-Feature `{run.id}` — réalisée par l'automate en {len(run.iterations)} itération(s) ; check `{last['check']['cmd']}` vert ; {merge}.
+Feature `{run.id}` — réalisée par l'automate en {len(run.iterations)} itération(s) ; check `{last['check']['cmd']}` et arch `{last['arch']['cmd']}` verts ; {merge}.
 
 | Axe | Verdict | Findings (dernière itération) |
 |-----|---------|-------------------------------|
@@ -441,8 +473,8 @@ def process(repo, issue, blk, args, automerge=False):
         build_loop(run)
         finalize(run, "approved")
         deliver(run)
-        done = ("✅ PR ouverte, check vert, revues unanimes, auto-merge armé." if run.automerge
-                else f"✅ PR #{run.pr} ouverte, check vert, revues unanimes : **à fusionner**.")
+        done = ("✅ PR ouverte, check et arch verts, revues unanimes, auto-merge armé." if run.automerge
+                else f"✅ PR #{run.pr} ouverte, check et arch verts, revues unanimes : **à fusionner**.")
         transition(repo, run.n, ["in-progress"], ["in-review"], done)
         return 0
     except Escalate as e:

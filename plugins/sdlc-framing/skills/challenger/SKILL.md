@@ -21,6 +21,7 @@ Tu ne décides rien à la place de l'utilisateur : sur un arbitrage, tu exposes 
    - Risques : sécurité, données, migration, dépendances externes.
    - Cas limites et modes de défaillance.
    - Non-objectifs : ce qu'on ne fera pas.
+   - Décisions structurantes probables (nouveau module, dépendance majeure, persistance, interface externe) au regard de `docs/architecture/ARCHITECTURE.md` : signale-les dans « Risques et inconnues » du brief, le `po` les fera cadrer par `/sdlc-framing:architect`.
 4. **Contredis quand c'est justifié**, avec un argument vérifiable. N'abonde pas par politesse.
 5. Quand l'idée est mûre : propose un identifiant (`sdlc-publish next-id <slug>`), écris `docs/features/<id>/brief.md` d'après `sdlc-template brief`, fais-le relire, puis propose de passer à `/sdlc-framing:po`.
 

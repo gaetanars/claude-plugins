@@ -36,9 +36,13 @@ if agent == "planner":
          "adrs": [{"slug": "Choix simple", "title": "Choix simple", "content_md": "## Statut\nAccepté\n\n## Décision\nFichier texte."}]})
 if agent == "implementer":
     n = counter("impl")
-    # scénario « check_red_then_green » : le 1er passage laisse le fichier marqueur BAD que le check refuse
-    marker = "BAD\n" if scen == "check_red_then_green" and n == 1 else f"v{n}\n"
-    open(os.path.join(os.getcwd(), "hello.txt"), "w" if scen == "check_red_then_green" else "a").write(marker)
+    # scénarios « check_red_then_green » / « arch_red_then_green » : le 1er passage laisse un marqueur que le gate refuse
+    marker = {"check_red_then_green": "BAD\n", "arch_red_then_green": "FORBIDDEN\n"}.get(scen) if n == 1 else None
+    overwrite = scen in ("check_red_then_green", "arch_red_then_green")
+    open(os.path.join(os.getcwd(), "hello.txt"), "w" if overwrite else "a").write(marker or f"v{n}\n")
+    if scen == "touch_arch":  # tentative de contournement : l'implementer modifie l'architecture verrouillée
+        with open(os.path.join(os.getcwd(), "docs", "architecture", "ARCHITECTURE.md"), "a") as f:
+            f.write("\nrègle assouplie\n")
     subprocess.run(["git", "add", "-A"], check=True)
     subprocess.run(["git", "commit", "-q", "-m", f"feat(hello): itération {n}", "-m", "Feature: 0001-hello\nPlan-Step: 1"], check=True)
     out({"status": "done", "summary": f"itération {n}", "tests": {"command": "true", "result": "ok"},

@@ -30,7 +30,8 @@ sdlc-init-repo github toi/projet-a --ci-context build          # dry-run : label
 sdlc-init-repo github toi/projet-a --ci-context build --apply  # exécute (auto-merge désactivé)
 ```
 
-- **`.claude/check.json`** : `{"check": "<tests + lint + typecheck>"}`, code de sortie 0 = vert. `sdlc-run` escalade en `needs-human` s'il est absent ou encore à `A_RENSEIGNER`.
+- **Architecture** : `/sdlc-framing:architect init` sur le poste (ARCHITECTURE.md, `rules.json` neutre, configuration de l'outil natif du langage sous `docs/architecture/native/`, ADR), puis commit. `sdlc-publish` refuse sans architecture acceptée et commitée ; `sdlc-run` aussi (`needs-human`).
+- **`.claude/check.json`** : `{"check": "<tests + lint + typecheck>", "arch": "<contrôle d'architecture>"}`, code de sortie 0 = vert. `sdlc-run` escalade en `needs-human` si l'un des deux est absent ou encore à `A_RENSEIGNER`.
 - **Merge humain par défaut** : la PR est ouverte, `sdlc/verdicts` posé, l'issue passe à `in-review` ; tu fusionnes.
 - **Auto-merge (opt-in par dépôt)** : `sdlc-init-repo github … --ci-context <ci> --automerge` (refusé sans `--ci-context`) **et** `toi/projet-a automerge` dans `/etc/sdlc/repos`. Le bot pose lui-même `sdlc/verdicts` : seule la CI du projet est un contrôle indépendant, d'où son caractère obligatoire.
 - Protection de branche sur dépôt **privé** : plan GitHub payant requis. Sans elle, `sdlc/verdicts` ne peut pas être « requis ».
@@ -43,6 +44,11 @@ Trois couches, de la plus solide à la plus faible :
 2. **Sandbox natif de Claude Code** (`--settings`) : activé et obligatoire (`failIfUnavailable`), pas d'échappatoire (`allowUnsandboxedCommands: false`), écriture limitée au worktree et au `.git` du clone de base, réseau limité à `SDLC_ALLOWED_DOMAINS` (défaut : `pypi.org,files.pythonhosted.org,registry.npmjs.org`). Il ne couvre que les commandes Bash.
 3. **`scripts/guard.py`** (hook PreToolUse, déterministe, échec en **mode fermé** : toute exception refuse l'action ; `timeout` + `onFailure: block` dans `hooks.json`). Il refuse `git push`, `gh`, réseau direct, `sudo`, `rm` hors worktree, lecture/écriture hors worktree, secrets (`~/.ssh`, `~/.config/gh`…), et l'édition de `.github/`, `.claude/`, `docs/features/`, `docs/adr/` par l'implementer. Reviewers : seules les commandes `git` de lecture (aussi imposées par `--allowedTools` en motifs natifs).
 
+Architecture verrouillée :
+- `docs/architecture/` et `.claude/` sont refusés en écriture à l'implementer (`guard.py`) **et** contrôlés par l'orchestrateur sur le diff de chaque itération (`needs-human` si touchés) : le contrôle ne dépend pas du hook.
+- Le planner ne tranche aucune décision de la liste « Exige un ADR » : elle remonte en `needs-clarification`. Seul l'humain change l'architecture (`architect revise`).
+- Le SDLC ne contient aucun code par langage : l'outil natif est choisi au cadrage ; sans outil exploitable l'architecture reste `draft` et l'usine refuse de travailler.
+
 Autres mesures :
 - `--setting-sources user` : les hooks, `env` et `.mcp.json` du `.claude/settings.json` du dépôt cible sont ignorés (`CLAUDE.md` reste lu comme fichier). `--bare` n'est pas utilisé : il désactive les hooks du plugin.
 - `--permission-mode dontAsk`, `--max-turns` par rôle (le `maxTurns` du frontmatter n'est pas documenté pour la session principale).
@@ -51,7 +57,7 @@ Autres mesures :
 
 ## Règles de verdict
 
-`approve` ⇔ le relecteur approuve **et** aucun finding `blocker`/`major` (sinon requalifié en `changes_requested`, `adjusted: true`). Les revues ne sont lancées que si le `check` exécuté par l'orchestrateur est vert ; un `check` rouge renvoie sa sortie à l'implementer comme finding `blocker` (axe `check`). Unanimité des 3 axes requise ; 3 itérations maximum (un `check` rouge compte), puis `needs-human`.
+`approve` ⇔ le relecteur approuve **et** aucun finding `blocker`/`major` (sinon requalifié en `changes_requested`, `adjusted: true`). Les revues ne sont lancées que si `check` et `arch`, exécutés par l'orchestrateur, sont verts ; un rouge renvoie sa sortie à l'implementer comme finding `blocker` (axes `check` et `arch`). Unanimité des 3 axes requise ; 3 itérations maximum (un `check` rouge compte), puis `needs-human`.
 
 ## Rodage
 
@@ -61,10 +67,11 @@ Autres mesures :
 
 ## Vérifié / non vérifié
 
-Vérifié (hors ligne) : `claude plugin validate --strict` ; orchestrateur de bout en bout contre un faux `gh`, un faux `claude` et un dépôt git local (nominal, rejet puis correction, escalade, clarification, dépendances, spec invalide, gate `check` rouge puis vert / absent / au gabarit, merge humain et opt-in, argv de `claude`) ; garde-fou (dont mode fermé et périmètre de la rétro) ; collecte de la rétro sur branches `feat/*`.
+Vérifié (hors ligne) : `claude plugin validate --strict` ; orchestrateur de bout en bout contre un faux `gh`, un faux `claude` et un dépôt git local (nominal, rejet puis correction, escalade, clarification, dépendances, spec invalide, gates `check` et `arch` rouge puis vert / absents / au gabarit, architecture absente ou `draft`, modification de l'architecture par l'implementer, merge humain et opt-in, argv de `claude`) ; garde-fou (dont mode fermé et périmètre de la rétro) ; collecte de la rétro sur branches `feat/*`.
 
 **Non vérifié** :
 - Un vrai appel `claude -p --agent sdlc-factory:<agent> …` : les flags existent mais aucun modèle n'a été appelé, ni la prise en compte du hook du plugin en `-p`.
+- Les outils natifs réels (génération de leur configuration par le skill `architect`, exécution de `arch`) dans chaque langage, et la qualité de l'entretien du skill : à juger à l'usage.
 - Le sandbox réel (bubblewrap/socat sur le serveur Linux) et ses clés `sandbox.*` de `--settings` ; en particulier que `git commit` dans un worktree y fonctionne avec l'écriture sur le `.git` du clone de base.
 - GitHub réel : protection de branche, auto-merge, statut `sdlc/verdicts`.
 - Quotas : sur abonnement, Opus en boucle sera le premier goulot ; une clé API est l'alternative (`SDLC_BUDGET_USD` plafonne par appel).

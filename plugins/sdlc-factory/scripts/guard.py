@@ -33,7 +33,7 @@ ROLE = os.environ.get("SDLC_ROLE", "implementer")
 READ_ROOTS = [WT] + [Path(p).resolve() for p in os.environ.get("SDLC_ALLOW_READ", "").split(os.pathsep) if p]
 
 PROTECTED = {
-    "implementer": [r"^\.git(/|$)", r"^\.github/", r"^\.claude/", r"^docs/features/", r"^docs/adr/"],
+    "implementer": [r"^\.git(/|$)", r"^\.github/", r"^\.claude/", r"^docs/features/", r"^docs/adr/", r"^docs/architecture/"],
     # La rétro ne touche ni au garde-fou, ni à l'orchestrateur, ni à ses bibliothèques, ni aux tests, ni à la marketplace.
     # plugins/*/.claude-plugin/plugin.json reste modifiable (bump de version exigé par la CI).
     "retro": [r"^\.git(/|$)", r"^\.github/", r"^tests/", r"^\.claude-plugin/",

@@ -16,6 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from sdlc_common import SDLC_HOME, WORKDIR, call_claude, gh, git, log, sh  # noqa: E402
 
 
+def gates_failed(data):
+    """Nombre de gates `check` / `arch` rouges, toutes itérations confondues."""
+    return sum(1 for it in data.get("iterations", []) if isinstance(it, dict)
+               for k in ("check", "arch") if isinstance(it.get(k), dict) and not it[k].get("ok", True))
+
+
 def _runs_at(base, ref, repo):
     """Runs lus dans un commit (run.json + reviews/) via git, sans toucher à l'arbre de travail."""
     tree = sh("git", "-C", base, "ls-tree", "-r", "--name-only", ref, "--", "docs/features", check=False).splitlines()
@@ -39,7 +45,7 @@ def _runs_at(base, ref, repo):
                                  "file": f["file"], "issue": f["issue"][:300]})
         out.append({"repo": repo, "feature": data["feature"], "outcome": data["outcome"], "detail": data.get("detail", ""),
                     "iterations": len(data.get("iterations", [])), "cost_usd": data.get("cost_usd_total"),
-                    "duration_s": data.get("duration_s"), "ended_at": data.get("ended_at", ""), "findings": findings})
+                    "duration_s": data.get("duration_s"), "gates_failed": gates_failed(data), "ended_at": data.get("ended_at", ""), "findings": findings})
     return out
 
 

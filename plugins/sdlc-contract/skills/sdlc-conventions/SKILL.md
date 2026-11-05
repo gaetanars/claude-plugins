@@ -46,7 +46,17 @@ Pas de `--no-verify`, pas de réécriture d'historique.
 `needs-human` : échec ou revues non approuvées après 3 itérations.
 
 ## Contrat de vérification
-`.claude/check.json` = `{"check": "<commande>"}` (code de sortie 0 = vert). L'implementer la lance avant chaque commit ; l'orchestrateur la relance après lui et ne lance les revues que si elle est verte.
+`.claude/check.json` = `{"check": "<commande>", "arch": "<commande>"}` (code de sortie 0 = vert). `check` : tests, lint, typecheck. `arch` : contrôle des règles d'architecture par l'outil natif du langage.
+L'implementer les lance avant chaque commit ; l'orchestrateur les relance après lui et ne lance les revues que si les deux sont verts.
+
+## Architecture
+Cadrée sur le poste avec `/sdlc-framing:architect`, versionnée dans le dépôt du projet, jamais modifiée par les agents :
+- `docs/architecture/ARCHITECTURE.md` : objectifs, stack, modules, principes, liste « Exige un ADR ».
+- `docs/architecture/rules.json` : format neutre (modules, `allowed_dependencies` refusées par défaut, outil natif).
+- `docs/architecture/native/` : configuration (et baseline) de l'outil natif, seul emplacement admis.
+- `docs/adr/` : arbitrages. Statut `Accepté`, `Proposé`, `Déprécié` ou `Remplacé par NNNN` (jamais de réécriture).
+Validation : `sdlc-validate-architecture --require-accepted docs/architecture`. Gabarits : `sdlc-template architecture`, `architecture-rules`.
+Une décision de la liste « Exige un ADR » non couverte par une ADR acceptée n'est jamais tranchée par un agent : elle remonte (`needs-clarification`).
 
 ## Verdicts de revue
 Trois axes : `correctness`, `security`, `simplicity`. Sortie : verdict `approve` ou `changes_requested`,

@@ -6,9 +6,9 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 | Plugin | Où l'installer | Version | Description |
 |---|---|---|---|
-| `sdlc-contract` | poste et serveur | 0.1.0 | Contrat partagé : gabarits brief/spec/plan/ADR, schéma de verdict, conventions, contrat `.claude/check.json`, `sdlc-validate-spec`, `sdlc-init-repo`. |
-| `sdlc-framing` | poste | 0.1.0 | Skills `challenger` (idéation) et `po` (cadrage), `sdlc-publish` (spec → issue GitHub). Dépend de `sdlc-contract`. |
-| [`sdlc-factory`](plugins/sdlc-factory/README.md) | serveur | 0.1.0 | Agents planner/implementer/reviewers/retro, orchestrateur `sdlc-run`, `sdlc-retro`, garde-fous, unités systemd. Dépend de `sdlc-contract`. Expérimental. |
+| `sdlc-contract` | poste et serveur | 0.2.0 | Contrat partagé : gabarits brief/spec/plan/ADR/architecture, schéma de verdict, conventions, contrat `.claude/check.json`, `sdlc-validate-spec`, `sdlc-validate-architecture`, `sdlc-init-repo`. |
+| `sdlc-framing` | poste | 0.2.0 | Skills `challenger` (idéation), `architect` (architecture) et `po` (cadrage), `sdlc-publish` (spec → issue GitHub). Dépend de `sdlc-contract`. |
+| [`sdlc-factory`](plugins/sdlc-factory/README.md) | serveur | 0.2.0 | Agents planner/implementer/reviewers/retro, orchestrateur `sdlc-run`, `sdlc-retro`, garde-fous, unités systemd. Dépend de `sdlc-contract`. Expérimental. |
 
 ## Parcours SDLC
 
@@ -16,14 +16,19 @@ Tu n'interviens qu'en idéation et cadrage (poste) ; un automate (serveur) fait 
 
 ```
 POSTE (toi)                                         SERVEUR (automate)
+/sdlc-framing:architect   → docs/architecture/ (ARCHITECTURE.md, rules.json, config native) + ADR
+                            une fois par projet ; ensuite `adr <sujet>` / `revise` ; commit de ta part
 /sdlc-framing:challenger  → brief.md
-/sdlc-framing:po          → spec.md + ambiguities.md
+/sdlc-framing:po          → spec.md + ambiguities.md (refuse sans architecture acceptée ; renvoie vers
+                            `architect adr` si une unité impose une décision structurante)
 sdlc-publish publish <id> → push main + issue [<id>] + label `ready` EN DERNIER
                                                     sdlc-run (timer) : issue `ready`, dépendances fermées
-                                                    ├─ setup : `needs-human` si .claude/check.json absent ou au gabarit
-                                                    ├─ planner (Opus)       → plan.md + ADR
+                                                    ├─ setup : `needs-human` si architecture absente/non acceptée ou
+                                                    │          .claude/check.json (check + arch) absent ou au gabarit
+                                                    ├─ planner (Opus)       → plan.md + ADR locales ; décision structurante → `needs-clarification`
                                                     ├─ implementer (Sonnet) → commits TDD
-                                                    ├─ check (lancé par l'orchestrateur, sans jeton) : rouge → retour à l'implementer
+                                                    ├─ check + arch (lancés par l'orchestrateur, sans jeton) : rouge → retour à l'implementer
+                                                    │  (toucher à docs/architecture/ ou .claude/ → `needs-human`)
                                                     ├─ 3 reviewers en parallèle (contexte vierge) → verdicts JSON liés au SHA
                                                     ├─ rejet : corrige ; 3 itérations max (check rouge compris), sinon `needs-human`
                                                     └─ push, PR, statut `sdlc/verdicts`, label `in-review` → TU FUSIONNES
@@ -32,7 +37,7 @@ sdlc-publish publish <id> → push main + issue [<id>] + label `ready` EN DERNIE
 sdlc-retro (hebdo) → PR sur CE dépôt : améliorations des prompts/skills/gabarits, preuves à l'appui, runs en échec inclus
 ```
 
-Installation poste : `/plugin install sdlc-framing@gaetanars` (`sdlc-contract` suit en dépendance), puis dans un projet `sdlc-init-repo scaffold` (renseigner `CLAUDE.md` et `.claude/check.json`). Installation serveur et garde-fous : [`plugins/sdlc-factory/README.md`](plugins/sdlc-factory/README.md).
+Installation poste : `/plugin install sdlc-framing@gaetanars` (`sdlc-contract` suit en dépendance), puis dans un projet `sdlc-init-repo scaffold` (renseigner `CLAUDE.md` et `.claude/check.json`), puis `/sdlc-framing:architect init`. Installation serveur et garde-fous : [`plugins/sdlc-factory/README.md`](plugins/sdlc-factory/README.md).
 
 ## Installation
 
@@ -104,8 +109,9 @@ Les plugins sont découverts depuis `marketplace.json` : un nouveau plugin est c
 | `test_workflows` | `workflows/*.js` | bloc `meta` (`name` = fichier, `description`), syntaxe valide via `node` |
 | `test_files` | fichiers du plugin | JSON valides, Python compilable, shell valide (`bash -n`), `plugins/*/bin/` : shebang + bit exécutable (index git) |
 | `test_sdlc_validate_spec`, `test_sdlc_publish` | `sdlc-contract`, `sdlc-framing` | validateur de spec, publication, `sdlc-init-repo` (`--automerge`, scaffold `check.json`) contre un faux `gh` |
+| `test_sdlc_validate_architecture` | `sdlc-contract` | format d'architecture : sections, `rules.json` (modules, graphe acyclique, outil natif sous `docs/architecture/native/`), ADR, `--require-accepted` |
 | `test_sdlc_guard`, `test_sdlc_run_unit` | `sdlc-factory` | garde-fou (mode fermé, périmètre de la rétro), fonctions pures de `sdlc-run`/`sdlc-retro` (`collect`, `load_check`, `read_repos`) |
-| `test_sdlc_e2e` | `sdlc-factory` | `sdlc-run` de bout en bout hors ligne (faux `gh`/`claude`, dépôt git local) : gate check, merge humain/opt-in automerge, argv de `claude` |
+| `test_sdlc_e2e` | `sdlc-factory` | `sdlc-run` de bout en bout hors ligne (faux `gh`/`claude`, dépôt git local) : gates check + arch, architecture verrouillée, merge humain/opt-in automerge, argv de `claude` |
 | job `actionlint` | workflows GitHub | `.github/workflows` et YAML de plugins contenant `jobs:` |
 
 Contraintes : le frontmatter doit rester en `clé: valeur` sur une ligne (lecteur stdlib volontairement minimal). La version du CLI Claude Code est figée dans `validate.yml` (`CLAUDE_CODE_VERSION`) et se met à jour à la main.
