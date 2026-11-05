@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sortie de l'implementer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "tests", "deviations", "ambiguities", "findings_response"],
+  "properties": {
+    "status": { "enum": ["done", "blocked"] },
+    "summary": { "type": "string" },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "result"],
+      "properties": { "command": { "type": "string" }, "result": { "type": "string" } }
+    },
+    "deviations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["plan_step", "what", "why"],
+        "properties": { "plan_step": { "type": "string" }, "what": { "type": "string" }, "why": { "type": "string" } }
+      }
+    },
+    "ambiguities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["question", "why_blocking"],
+        "properties": { "question": { "type": "string" }, "why_blocking": { "type": "string" } }
+      }
+    },
+    "findings_response": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["axis", "issue", "action", "detail"],
+        "properties": {
+          "axis": { "type": "string" },
+          "issue": { "type": "string" },
+          "action": { "enum": ["fixed", "disputed"] },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

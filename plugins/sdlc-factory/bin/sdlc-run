@@ -1,0 +1,496 @@
+#!/usr/bin/env python3
+"""sdlc-run — orchestrateur du SDLC : issue `ready` → plan → implémentation → check → revues → PR.
+
+État : labels GitHub + dépôt git (docs/features/<id>/). Aucun état local hormis un verrou.
+Usage : sdlc-run [--repo OWNER/REPO]... [--dry-run]
+Dépôts : --repo, sinon le fichier ~/.config/sdlc/repos : un `OWNER/REPO` par ligne, suivi de `automerge`
+pour armer l'auto-merge sur ce dépôt (opt-in ; sinon la PR est ouverte et le merge reste humain).
+Gate : la commande de `.claude/check.json` est exécutée par l'orchestrateur après chaque implémentation ;
+les revues ne sont lancées que si elle est verte.
+"""
+import argparse
+import concurrent.futures as cf
+import datetime as dt
+import fcntl
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from sdlc_common import (CHECK_SECRET_VARS, CONTRACT, SCHEMAS, WORKDIR, call_claude, gh, ghjson, git, log, sh)  # noqa: E402
+
+MAX_ITER = int(os.environ.get("SDLC_MAX_ITER", "3"))
+AXES = ["correctness", "security", "simplicity"]
+SUPPORTED_SCHEMA = {"1"}
+CLARIF_MARK = "<!-- sdlc:clarification -->"
+CHECK_PLACEHOLDER = "A_RENSEIGNER"  # valeur posée par `sdlc-init-repo scaffold`
+CHECK_TIMEOUT = int(os.environ.get("SDLC_CHECK_TIMEOUT", "1800"))
+CHECK_TAIL = 3000
+
+
+class Escalate(Exception):
+    def __init__(self, label, message):
+        super().__init__(message)
+        self.label, self.message = label, message
+
+
+# ---------------------------------------------------------------- fonctions pures
+
+def parse_block(body):
+    m = re.search(r"<!--\s*sdlc:begin\s*-->(.*?)<!--\s*sdlc:end\s*-->", body or "", re.S)
+    if not m:
+        return None
+    d = {}
+    for line in m.group(1).strip().splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            d[k.strip()] = v.strip()
+    return d
+
+
+def adjudicate(out):
+    """approve ⇔ le relecteur approuve ET aucun finding blocker/major. Retourne (verdict effectif, ajusté?)."""
+    blocking = [f for f in out.get("findings", []) if f.get("severity") in ("blocker", "major")]
+    declared = out.get("verdict")
+    effective = "approve" if declared == "approve" and not blocking else "changes_requested"
+    return effective, effective != declared
+
+
+def next_adr_number(wt):
+    d = Path(wt) / "docs" / "adr"
+    nums = [int(m.group(1)) for p in d.glob("*.md") if (m := re.match(r"(\d{4})-", p.name))] if d.is_dir() else []
+    return max(nums, default=0) + 1
+
+
+def slugify(s):
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-") or "decision"
+
+
+def format_questions(items):
+    return "\n".join(f"- **Q{i}.** {a['question']}\n  - Pourquoi c'est bloquant : {a['why_blocking']}"
+                     for i, a in enumerate(items, 1))
+
+
+def read_repos(cli):
+    """Retourne [(repo, automerge)]. `--repo` n'active jamais l'auto-merge ; le fichier le fait via `OWNER/REPO automerge`."""
+    if cli:
+        return [(r, False) for r in cli]
+    f = Path(os.environ.get("SDLC_REPOS_FILE") or Path.home() / ".config" / "sdlc" / "repos")
+    if not f.exists():
+        sys.exit(f"aucun dépôt : --repo ou {f}")
+    out = []
+    for line in f.read_text().splitlines():
+        parts = line.split("#", 1)[0].split()
+        if not parts:
+            continue
+        if len(parts) > 2 or (len(parts) == 2 and parts[1] != "automerge"):
+            sys.exit(f"{f} : ligne invalide « {line.strip()} » (attendu : OWNER/REPO [automerge])")
+        out.append((parts[0], len(parts) == 2))
+    return out
+
+
+def load_check(wt):
+    """Commande de `.claude/check.json` ; ValueError si absente, illisible ou encore au gabarit."""
+    f = Path(wt) / ".claude" / "check.json"
+    if not f.is_file():
+        raise ValueError(".claude/check.json est absent")
+    try:
+        cmd = json.loads(f.read_text(encoding="utf-8")).get("check")
+    except (ValueError, AttributeError) as e:
+        raise ValueError(f".claude/check.json illisible : {e}") from None
+    if not isinstance(cmd, str) or not cmd.strip() or cmd.strip() == CHECK_PLACEHOLDER:
+        raise ValueError('.claude/check.json : "check" est vide ou encore au gabarit')
+    return cmd.strip()
+
+
+def run_check(wt, cmd):
+    """Exécute `check` dans le worktree (sans jeton) : {ok, code, cmd, tail}. L'orchestrateur ne croit jamais l'implementer sur parole."""
+    env = {k: v for k, v in os.environ.items() if k not in CHECK_SECRET_VARS}
+    try:
+        r = subprocess.run(cmd, shell=True, cwd=wt, env=env, capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+        code, out = r.returncode, (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        code, out = 124, f"délai dépassé ({CHECK_TIMEOUT}s)\n{partial}"
+    return {"ok": code == 0, "code": code, "cmd": cmd, "tail": out.strip()[-CHECK_TAIL:]}
+
+
+# ---------------------------------------------------------------- état d'un run
+
+class Run:
+    def __init__(self, repo, issue, blk, args, automerge=False):
+        self.repo, self.issue, self.blk, self.args, self.automerge = repo, issue, blk, args, automerge
+        self.pr = None
+        self.check_cmd = None
+        self.n = issue["number"]
+        self.id = blk["feature_id"]
+        self.sha = blk["spec_sha"]
+        self.branch = f"feat/{self.id}"
+        self.base = WORKDIR / "repos" / repo.replace("/", "__")
+        self.wt = WORKDIR / "wt" / repo.replace("/", "__") / self.id
+        self.default = "main"
+        self.calls, self.iterations, self.events = [], [], []
+        self.t0 = time.time()
+
+    @property
+    def fdir(self):
+        return self.wt / "docs" / "features" / self.id
+
+    def rel(self, *p):
+        return Path("docs") / "features" / self.id / Path(*p) if p else Path("docs") / "features" / self.id
+
+    def event(self, msg):
+        log(f"[{self.id}] {msg}")
+        self.events.append({"t": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"), "msg": msg})
+
+    def claude(self, role, prompt, schema, phase):
+        return call_claude(role, prompt, self.wt, self.calls, schema=schema, phase=phase)
+
+    def commit(self, msg, paths=None):
+        git(self.wt, "add", "-A") if not paths else git(self.wt, "add", "--", *map(str, paths))
+        if git(self.wt, "diff", "--cached", "--name-only"):
+            git(self.wt, "commit", "-m", msg, "-m", f"Feature: {self.id}")
+            return True
+        return False
+
+
+# ---------------------------------------------------------------- GitHub
+
+def transition(repo, n, remove=(), add=(), comment=None):
+    args = ["issue", "edit", str(n), "--repo", repo]
+    for l in remove:
+        args += ["--remove-label", l]
+    for l in add:
+        args += ["--add-label", l]
+    if remove or add:
+        gh(*args, check=False)
+    if comment:
+        gh("issue", "comment", str(n), "--repo", repo, "--body", comment, check=False)
+
+
+def pick_issue(repos):
+    for repo, automerge in repos:
+        issues = ghjson("issue", "list", "--repo", repo, "--label", "ready", "--state", "open",
+                        "--json", "number,title,body", "--limit", "50") or []
+        for it in sorted(issues, key=lambda i: i["number"]):
+            blk = parse_block(it["body"])
+            if not blk or not blk.get("feature_id") or not blk.get("spec_sha"):
+                log(f"{repo}#{it['number']} : bloc sdlc absent ou incomplet")
+                transition(repo, it["number"], ["ready"], ["needs-human"],
+                           "Issue `ready` sans bloc `sdlc:begin` valide : republier via `sdlc-publish`.")
+                continue
+            deps = [int(x) for x in blk.get("depends_on_issues", "").split(",") if x.strip()]
+            if all(ghjson("issue", "view", str(d), "--repo", repo, "--json", "state")["state"] == "CLOSED" for d in deps):
+                return repo, it, blk, automerge
+            log(f"{repo}#{it['number']} : dépendances non fermées, ignorée")
+    return None
+
+
+# ---------------------------------------------------------------- phases
+
+def setup(run):
+    base = run.base
+    if not base.exists():
+        base.parent.mkdir(parents=True, exist_ok=True)
+        gh("repo", "clone", run.repo, str(base))
+    sh("git", "-C", base, "fetch", "origin", "--prune")
+    head = sh("git", "-C", base, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+    run.default = head.split("/", 1)[1] if "/" in head else "main"
+    fresh = not run.wt.exists()
+    if fresh:
+        run.wt.parent.mkdir(parents=True, exist_ok=True)
+        remote = sh("git", "-C", base, "ls-remote", "--heads", "origin", run.branch)
+        if remote:
+            sh("git", "-C", base, "worktree", "add", "-B", run.branch, run.wt, f"origin/{run.branch}")
+        else:
+            sh("git", "-C", base, "worktree", "add", "-b", run.branch, run.wt, f"origin/{run.default}")
+            git(run.wt, "checkout", run.sha, "--", str(run.rel()))  # cadrage épinglé au SHA publié
+            run.commit(f"docs({run.id}): cadrage épinglé à {run.sha[:7]}")
+    else:
+        git(run.wt, "fetch", "origin", "--prune")
+    spec = git(run.wt, "show", f"{run.sha}:{run.blk.get('spec_path', f'docs/features/{run.id}/spec.md')}")
+    m = re.search(r"^schema_version:\s*(\S+)", spec, re.M)
+    if not m or m.group(1) not in SUPPORTED_SCHEMA:
+        raise Escalate("needs-human", f"schema_version de spec non supporté : {m.group(1) if m else 'absent'}")
+    v = sh(CONTRACT / "bin" / "sdlc-validate-spec", run.fdir, check=False)
+    if "OK" not in v:
+        raise Escalate("needs-human", "La spec ne passe pas `sdlc-validate-spec` : republier un cadrage valide.")
+    try:
+        run.check_cmd = load_check(run.wt)
+    except ValueError as e:
+        raise Escalate("needs-human", f"{e}. Renseigne `.claude/check.json` sur la branche par défaut "
+                                      '(`{"check": "<tests + lint + typecheck>"}`), puis remets le label `ready`.')
+
+
+def apply_clarifications(run):
+    comments = ghjson("issue", "view", str(run.n), "--repo", run.repo, "--json", "comments")["comments"]
+    idx = [i for i, c in enumerate(comments) if CLARIF_MARK in c["body"]]
+    if not idx:
+        return
+    asked = comments[idx[-1]]
+    answers = [c for c in comments[idx[-1] + 1:] if c["author"]["login"] != asked["author"]["login"]]
+    amb = run.fdir / "ambiguities.md"
+    text = amb.read_text(encoding="utf-8")
+    new = [c for c in answers if f"<!-- comment: {c['id']} -->" not in text]
+    if not answers:
+        raise Escalate("needs-clarification", "Aucune réponse trouvée après ma dernière question : réponds en commentaire, "
+                                              "puis remets le label `ready`.")
+    if not new:
+        return
+    q = asked["body"].replace(CLARIF_MARK, "").strip().replace("\n", "\n> ")
+    block = [f"\n## Clarification (issue #{run.n}, {dt.date.today()})", f"> {q}", ""]
+    for c in new:
+        block += [f"- [x] Réponse de {c['author']['login']} : {c['body'].strip()} <!-- comment: {c['id']} -->"]
+    amb.write_text(text.rstrip() + "\n" + "\n".join(block) + "\n", encoding="utf-8")
+    run.commit(f"docs({run.id}): clarification issue #{run.n}", [run.rel("ambiguities.md")])
+    run.event(f"{len(new)} réponse(s) de clarification intégrée(s)")
+
+
+def plan_phase(run):
+    if (run.fdir / "plan.md").exists():
+        run.event("plan déjà présent : reprise")
+        return
+    adr0 = next_adr_number(run.wt)
+    prompt = f"""Feature {run.id} (issue #{run.n}). Planifie cette feature.
+Cadrage (source de vérité, immuable) : {run.fdir}/spec.md, {run.fdir}/brief.md, {run.fdir}/ambiguities.md
+Contexte projet : CLAUDE.md à la racine du dépôt ; ADR existants dans docs/adr/.
+Gabarits : {CONTRACT}/templates/plan.md et {CONTRACT}/templates/adr.md. Conventions : {CONTRACT}/skills/sdlc-conventions/SKILL.md
+Tes ADR seront numérotés à partir de {adr0:04d}, dans l'ordre de ta liste.
+"""
+    out = run.claude("planner", prompt, SCHEMAS / "plan.schema.json", "plan")
+    if out["ambiguities"]:
+        raise Escalate("needs-clarification", format_questions(out["ambiguities"]))
+    if not out["plan_md"].strip():
+        raise RuntimeError("le planner a rendu un plan vide sans ambiguïté")
+    (run.fdir / "plan.md").write_text(out["plan_md"].rstrip() + "\n", encoding="utf-8")
+    n = adr0
+    for adr in out["adrs"]:
+        p = run.wt / "docs" / "adr" / f"{n:04d}-{slugify(adr['slug'])}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# ADR-{n:04d}: {adr['title']}\n\n{adr['content_md'].strip()}\n\n---\n"
+                     f"Feature : {run.id} · Plan : docs/features/{run.id}/plan.md\n", encoding="utf-8")
+        n += 1
+    run.commit(f"docs({run.id}): plan et ADR")
+    run.event(f"plan et {len(out['adrs'])} ADR écrits")
+
+
+def implementer_prompt(run, findings, n):
+    p = f"""Feature {run.id} (issue #{run.n}), itération {n}/{MAX_ITER}. Branche courante : {run.branch}.
+Implémente le plan {run.fdir}/plan.md, étape par étape, en TDD, selon la spec {run.fdir}/spec.md.
+`CLAUDE.md` (racine du dépôt) donne les commandes de test et de lint. Conventions de commit : {CONTRACT}/skills/sdlc-conventions/SKILL.md
+Des commits peuvent déjà exister sur la branche : vérifie `git log` et reprends où le travail s'est arrêté.
+"""
+    if findings:
+        p += "\nFindings de revue à traiter (blocker et major obligatoires) :\n" + json.dumps(findings, ensure_ascii=False, indent=1)
+    return p
+
+
+def reviewer_prompt(run, axis, head, check):
+    return f"""Revue de la feature {run.id}, axe {axis}. Commit relu : {head}.
+Check exécuté par l'orchestrateur (`{check['cmd']}`) : vert, code 0. Fin de sortie :
+{check['tail'][-800:] or '(sortie vide)'}
+Un test affaibli, supprimé ou ignoré pour faire passer ce check reste un blocker.
+Diff à relire : `git diff origin/{run.default}...{head} -- . ':(exclude)docs/features'`
+Spec : {run.fdir}/spec.md · Plan : {run.fdir}/plan.md · Contexte projet : CLAUDE.md · Conventions : {CONTRACT}/skills/sdlc-conventions/SKILL.md
+Rends ton verdict au format structuré.
+"""
+
+
+def has_code_diff(run):
+    return bool(git(run.wt, "diff", "--name-only", f"origin/{run.default}...HEAD", "--", ".", ":(exclude)docs"))
+
+
+def review_all(run, head, n, check):
+    def one(axis):
+        return axis, run.claude(f"reviewer-{axis}", reviewer_prompt(run, axis, head, check),
+                                CONTRACT / "schemas" / "verdict.schema.json", f"review-{n}")
+    with cf.ThreadPoolExecutor(len(AXES)) as ex:
+        results = dict(ex.map(one, AXES))
+    (run.fdir / "reviews").mkdir(exist_ok=True)
+    stored = {}
+    for axis, out in results.items():
+        effective, adjusted = adjudicate(out)
+        rec = {"axis": axis, "commit": head, "iteration": n,
+               "reviewed_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+               "verdict": effective, "verdict_declared": out["verdict"], "adjusted": adjusted,
+               "summary": out["summary"], "findings": out["findings"]}
+        (run.fdir / "reviews" / f"{head[:7]}-{axis}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=2) + "\n",
+                                                                       encoding="utf-8")
+        stored[axis] = rec
+    run.commit(f"docs({run.id}): verdicts de revue {head[:7]}", [run.rel("reviews")])
+    return stored
+
+
+def collect_findings(stored):
+    out = []
+    for axis, rec in stored.items():
+        if rec["verdict"] == "approve":
+            continue
+        pick = [f for f in rec["findings"] if f["severity"] in ("blocker", "major")] or rec["findings"]
+        out += [{"axis": axis, **f} for f in pick]
+        if not pick:
+            out.append({"axis": axis, "severity": "major", "issue": rec["summary"], "file": "", "line": 0,
+                        "evidence": "verdict changes_requested sans finding", "suggestion": ""})
+    return out
+
+
+def build_loop(run):
+    findings = None
+    for n in range(1, MAX_ITER + 1):
+        before = git(run.wt, "rev-parse", "HEAD")
+        res = run.claude("implementer", implementer_prompt(run, findings, n), SCHEMAS / "impl.schema.json", f"impl-{n}")
+        if res["status"] == "blocked" or res["ambiguities"]:
+            raise Escalate("needs-clarification", format_questions(res["ambiguities"]) or res["summary"])
+        if git(run.wt, "status", "--porcelain"):
+            run.commit(f"chore({run.id}): commit résiduel de l'implementer")
+        head = git(run.wt, "rev-parse", "HEAD")
+        if head == before and not (n == 1 and has_code_diff(run)):
+            raise Escalate("needs-human", f"L'implementer n'a produit aucun commit (itération {n}).")
+        check = run_check(run.wt, run.check_cmd)
+        rec_check = {"ok": check["ok"], "code": check["code"], "cmd": check["cmd"]}
+        if not check["ok"]:
+            run.iterations.append({"n": n, "head": head, "check": rec_check, "verdicts": {}, "findings": {},
+                                   "implementer_status": res["status"], "deviations": res["deviations"]})
+            run.event(f"itération {n} : check rouge (code {check['code']}), pas de revue")
+            findings = [{"axis": "check", "severity": "blocker", "file": "", "line": 0,
+                         "issue": f"`{check['cmd']}` est rouge (code {check['code']})",
+                         "evidence": check["tail"], "suggestion": "corriger le code, jamais affaiblir un test ou le check"}]
+            continue
+        stored = review_all(run, head, n, check)
+        run.iterations.append({"n": n, "head": head, "check": rec_check,
+                               "verdicts": {a: r["verdict"] for a, r in stored.items()},
+                               "findings": {a: len(r["findings"]) for a, r in stored.items()},
+                               "implementer_status": res["status"], "deviations": res["deviations"]})
+        run.event(f"itération {n} : " + ", ".join(f"{a}={r['verdict']}" for a, r in stored.items()))
+        if all(r["verdict"] == "approve" for r in stored.values()):
+            return git(run.wt, "rev-parse", "HEAD")
+        findings = collect_findings(stored)
+    last = run.iterations[-1]
+    if not last["check"]["ok"]:
+        raise Escalate("needs-human", f"Check toujours rouge après {MAX_ITER} itérations (`{last['check']['cmd']}`, code {last['check']['code']}). "
+                                      f"Branche `{run.branch}`.")
+    raise Escalate("needs-human", f"Revues non approuvées après {MAX_ITER} itérations : {last['verdicts']}. "
+                                  f"Détails dans docs/features/{run.id}/reviews/ sur la branche `{run.branch}`.")
+
+
+def finalize(run, outcome, detail=""):
+    if not run.wt.exists() or not run.fdir.exists():
+        return
+    data = {"feature": run.id, "repo": run.repo, "issue": run.n, "outcome": outcome, "detail": detail[:1000],
+            "started_at": dt.datetime.fromtimestamp(run.t0, dt.timezone.utc).isoformat(timespec="seconds"),
+            "ended_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+            "duration_s": round(time.time() - run.t0), "iterations": run.iterations,
+            "cost_usd_total": round(sum(c["cost_usd"] for c in run.calls), 4), "calls": run.calls, "events": run.events}
+    (run.fdir / "run.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        run.commit(f"docs({run.id}): métriques du run ({outcome})", [run.rel("run.json")])
+        git(run.wt, "push", "-u", "origin", run.branch, check=False)
+    except Exception as e:  # le compte rendu ne doit jamais masquer l'erreur d'origine
+        log(f"finalize : {e}")
+
+
+def deliver(run):
+    git(run.wt, "push", "-u", "origin", run.branch)
+    head = git(run.wt, "rev-parse", "HEAD")
+    last = run.iterations[-1]
+    rows = "\n".join(f"| {a} | {v} | {last['findings'][a]} |" for a, v in last["verdicts"].items())
+    base = f"https://github.com/{run.repo}/blob/{head}/docs/features/{run.id}"
+    merge = "auto-merge armé une fois la CI requise verte" if run.automerge else "merge humain"
+    body = f"""Closes #{run.n}
+
+Feature `{run.id}` — réalisée par l'automate en {len(run.iterations)} itération(s) ; check `{last['check']['cmd']}` vert ; {merge}.
+
+| Axe | Verdict | Findings (dernière itération) |
+|-----|---------|-------------------------------|
+{rows}
+
+Traçabilité : [spec]({base}/spec.md) · [plan]({base}/plan.md) · [ambiguïtés]({base}/ambiguities.md) · [verdicts]({base}/reviews) · [run.json]({base}/run.json)
+Coût total estimé : {sum(c['cost_usd'] for c in run.calls):.2f} USD
+"""
+    existing = ghjson("pr", "list", "--repo", run.repo, "--head", run.branch, "--state", "open", "--json", "number")
+    if existing:
+        pr = str(existing[0]["number"])
+    else:
+        url = gh("pr", "create", "--repo", run.repo, "--base", run.default, "--head", run.branch,
+                 "--title", run.issue["title"], "--body-file", "-", input=body)
+        pr = url.rstrip("/").split("/")[-1]
+    gh("api", f"repos/{run.repo}/statuses/{head}", "-f", "state=success", "-f", "context=sdlc/verdicts",
+       "-f", f"description={len(AXES)}/{len(AXES)} approve (itération {last['n']})")
+    run.pr = pr
+    if not run.automerge:
+        run.event(f"PR #{pr} ouverte, à fusionner (auto-merge non activé pour ce dépôt)")
+        return
+    try:
+        gh("pr", "merge", pr, "--repo", run.repo, "--auto", "--squash")
+    except RuntimeError as e:
+        raise Escalate("needs-human", f"PR #{pr} prête mais l'auto-merge n'a pas pu être armé : {e}")
+    run.event(f"PR #{pr} ouverte, auto-merge armé")
+
+
+def process(repo, issue, blk, args, automerge=False):
+    run = Run(repo, issue, blk, args, automerge)
+    transition(repo, run.n, ["ready"], ["in-progress"], f"🤖 Prise en charge (feature `{run.id}`).")
+    try:
+        setup(run)
+        apply_clarifications(run)
+        plan_phase(run)
+        build_loop(run)
+        finalize(run, "approved")
+        deliver(run)
+        done = ("✅ PR ouverte, check vert, revues unanimes, auto-merge armé." if run.automerge
+                else f"✅ PR #{run.pr} ouverte, check vert, revues unanimes : **à fusionner**.")
+        transition(repo, run.n, ["in-progress"], ["in-review"], done)
+        return 0
+    except Escalate as e:
+        finalize(run, e.label, e.message)
+        if e.label == "needs-clarification":
+            comment = (f"{CLARIF_MARK}\n**Clarification requise** (feature `{run.id}`) :\n\n{e.message}\n\n"
+                       "Réponds dans un commentaire, puis remets le label `ready` : la réponse sera ajoutée à `ambiguities.md`.")
+        else:
+            comment = f"⛔ **Intervention requise** (feature `{run.id}`, branche `{run.branch}`) :\n\n{e.message}"
+        transition(repo, run.n, ["in-progress"], [e.label], comment)
+        return 1
+    except Exception as e:  # noqa: BLE001 — tout échec imprévu escalade vers l'humain
+        finalize(run, "needs-human", str(e))
+        transition(repo, run.n, ["in-progress"], ["needs-human"],
+                   f"⛔ **Échec technique** (feature `{run.id}`) :\n\n```\n{str(e)[:1500]}\n```")
+        return 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--repo", action="append", default=[])
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+    os.environ.setdefault("GIT_AUTHOR_NAME", os.environ.get("SDLC_GIT_NAME", "sdlc-bot"))
+    os.environ.setdefault("GIT_COMMITTER_NAME", os.environ["GIT_AUTHOR_NAME"])
+    os.environ.setdefault("GIT_AUTHOR_EMAIL", os.environ.get("SDLC_GIT_EMAIL", "sdlc-bot@localhost"))
+    os.environ.setdefault("GIT_COMMITTER_EMAIL", os.environ["GIT_AUTHOR_EMAIL"])
+    os.environ["GIT_TERMINAL_PROMPT"] = "0"
+
+    repos = read_repos(args.repo)
+    WORKDIR.mkdir(parents=True, exist_ok=True)
+    lock = open(WORKDIR / "lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("un autre run est en cours")
+        return 0
+    picked = pick_issue(repos)
+    if not picked:
+        log("rien à traiter")
+        return 0
+    repo, issue, blk, automerge = picked
+    if args.dry_run:
+        print(json.dumps({"repo": repo, "issue": issue["number"], "title": issue["title"], "feature": blk["feature_id"],
+                          "spec_sha": blk["spec_sha"], "max_iterations": MAX_ITER, "automerge": automerge}, ensure_ascii=False))
+        return 0
+    return process(repo, issue, blk, args, automerge)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

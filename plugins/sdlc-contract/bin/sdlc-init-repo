@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""sdlc-init-repo — prépare un projet pour le SDLC.
+
+  sdlc-init-repo scaffold
+      Dans un dépôt git : crée docs/features, docs/adr, un CLAUDE.md (gabarit) et .claude/check.json
+      (gabarit, à renseigner) s'ils n'existent pas.
+
+  sdlc-init-repo github OWNER/REPO [--branch main] [--ci-context NOM]... [--automerge] [--apply]
+      Labels du flux, suppression des branches fusionnées, protection de branche
+      (PR obligatoire, checks requis : sdlc/verdicts + --ci-context). Merge humain par défaut ;
+      --automerge active allow_auto_merge et exige au moins un --ci-context. Sans --apply : affiche seulement.
+
+Protection : enforce_admins=false, donc le propriétaire (admin) peut pousser directement sur la
+branche par défaut ; le compte de l'automate (collaborateur en écriture, non admin) ne le peut pas.
+"""
+import argparse
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CHECK_TEMPLATE = '{\n  "check": "A_RENSEIGNER"\n}\n'  # valeur gabarit : sdlc-run escalade tant qu'elle reste en place
+LABELS = {
+    "ready": ("0E8A16", "Cadrage publié : à traiter par l'automate"),
+    "in-progress": ("FBCA04", "Pris en charge par l'automate (verrou)"),
+    "in-review": ("1D76DB", "PR ouverte, en attente de merge"),
+    "needs-clarification": ("D93F0B", "L'agent a une question : voir le commentaire"),
+    "needs-human": ("B60205", "Échec ou revues non approuvées : intervention requise"),
+}
+
+
+def scaffold():
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode:
+        sys.exit("pas dans un dépôt git")
+    root = Path(top.stdout.strip())
+    for d in ("docs/features", "docs/adr"):
+        (root / d).mkdir(parents=True, exist_ok=True)
+        keep = root / d / ".gitkeep"
+        if not any((root / d).iterdir()):
+            keep.touch()
+    claude = root / "CLAUDE.md"
+    if claude.exists():
+        print("CLAUDE.md existe déjà : inchangé")
+    else:
+        claude.write_text((ROOT / "templates" / "project-CLAUDE.md").read_text(encoding="utf-8"), encoding="utf-8")
+        print("CLAUDE.md créé : renseigne Stack et Commandes (obligatoire pour les agents)")
+    check = root / ".claude" / "check.json"
+    if check.exists():
+        print(".claude/check.json existe déjà : inchangé")
+    else:
+        check.parent.mkdir(parents=True, exist_ok=True)
+        check.write_text(CHECK_TEMPLATE, encoding="utf-8")
+        print('.claude/check.json créé : renseigne "check" (tests + lint + typecheck, code de sortie 0 = vert), obligatoire')
+    print(f"scaffold OK dans {root}")
+
+
+def github(a):
+    repo = a.repo
+    if a.automerge and not a.ci_context:
+        sys.exit("--automerge exige au moins un --ci-context (le bot pose lui-même sdlc/verdicts : la CI du projet est le seul contrôle indépendant)")
+    steps = []
+    for name, (color, desc) in LABELS.items():
+        steps.append((["gh", "label", "create", name, "--repo", repo, "--color", color,
+                       "--description", desc, "--force"], None))
+    steps.append((["gh", "api", "-X", "PATCH", f"repos/{repo}", "-F", f"allow_auto_merge={'true' if a.automerge else 'false'}",
+                   "-F", "delete_branch_on_merge=true", "-F", "allow_squash_merge=true"], None))
+    protection = {
+        "required_status_checks": {"strict": False, "contexts": ["sdlc/verdicts"] + a.ci_context},
+        "enforce_admins": False,
+        "required_pull_request_reviews": {"required_approving_review_count": 0},
+        "restrictions": None,
+    }
+    steps.append((["gh", "api", "-X", "PUT", f"repos/{repo}/branches/{a.branch}/protection",
+                   "--input", "-"], json.dumps(protection)))
+    for argv, stdin in steps:
+        line = " ".join(shlex.quote(x) for x in argv)
+        if not a.apply:
+            print(line + (f"   <<< {stdin}" if stdin else ""))
+            continue
+        r = subprocess.run(argv, input=stdin, capture_output=True, text=True)
+        status = "ok" if r.returncode == 0 else f"ÉCHEC ({r.stderr.strip()[:200]})"
+        print(f"{status} : {line}")
+    if not a.apply:
+        print("\n(dry-run : relancer avec --apply pour exécuter)")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("scaffold")
+    g = sub.add_parser("github")
+    g.add_argument("repo")
+    g.add_argument("--branch", default="main")
+    g.add_argument("--ci-context", action="append", default=[])
+    g.add_argument("--automerge", action="store_true", help="active allow_auto_merge (opt-in ; exige --ci-context)")
+    g.add_argument("--apply", action="store_true")
+    a = ap.parse_args()
+    scaffold() if a.cmd == "scaffold" else github(a)
+
+
+if __name__ == "__main__":
+    main()
