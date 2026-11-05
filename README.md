@@ -6,38 +6,43 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 | Plugin | Où l'installer | Version | Description |
 |---|---|---|---|
-| `sdlc-contract` | poste et serveur | 0.2.0 | Contrat partagé : gabarits brief/spec/plan/ADR/architecture, schéma de verdict, conventions, contrat `.claude/check.json`, `sdlc-validate-spec`, `sdlc-validate-architecture`, `sdlc-init-repo`. |
-| `sdlc-framing` | poste | 0.2.0 | Skills `challenger` (idéation), `architect` (architecture) et `po` (cadrage), `sdlc-publish` (spec → issue GitHub). Dépend de `sdlc-contract`. |
-| [`sdlc-factory`](plugins/sdlc-factory/README.md) | serveur | 0.2.0 | Agents planner/implementer/reviewers/retro, orchestrateur `sdlc-run`, `sdlc-retro`, garde-fous, unités systemd. Dépend de `sdlc-contract`. Expérimental. |
+| `sdlc-contract` | poste et serveur | 0.3.0 | Contrat partagé : gabarits brief/spec/plan/ADR/architecture/apprentissages, schéma de verdict, conventions, contrat `.claude/check.json`, `sdlc-validate-spec`, `sdlc-validate-architecture`, `sdlc-init-repo`. |
+| `sdlc-framing` | poste (ou session Orca) | 0.3.0 | Skills `challenger` (idéation), `architect` (architecture), `po` (cadrage), `retro` (amélioration des outils), `sdlc-publish` (spec → issue GitHub). Dépend de `sdlc-contract`. |
+| [`sdlc-factory`](plugins/sdlc-factory/README.md) | serveur Orca | 0.3.0 | Skill `deliver`, agents `planner`/`implementer`/`reviewer`, `sdlc-gate` (TDD vérifié, gates, livraison en PR). Dépend de `sdlc-contract`. |
+
+Les plugins sont universels (aucun code propre à un langage ou à un projet) ; tout ce qui concerne un projet vit dans son dépôt.
+Les artefacts sont rédigés en français : les validateurs contrôlent les titres de sections.
 
 ## Parcours SDLC
 
-Tu n'interviens qu'en idéation et cadrage (poste) ; un automate (serveur) fait plan → implémentation → check → 3 revues → PR. **Le merge est humain par défaut.**
+Tu interviens en idéation, architecture et cadrage, en local ou dans une session Orca ; l'usine fait ensuite plan → TDD → revue → PR
+sans toi, sauf question ou escalade. **Le merge est toujours humain.**
 
 ```
-POSTE (toi)                                         SERVEUR (automate)
-/sdlc-framing:architect   → docs/architecture/ (ARCHITECTURE.md, rules.json, config native) + ADR
-                            une fois par projet ; ensuite `adr <sujet>` / `revise` ; commit de ta part
-/sdlc-framing:challenger  → brief.md
-/sdlc-framing:po          → spec.md + ambiguities.md (refuse sans architecture acceptée ; renvoie vers
-                            `architect adr` si une unité impose une décision structurante)
-sdlc-publish publish <id> → push main + issue [<id>] + label `ready` EN DERNIER
-                                                    sdlc-run (timer) : issue `ready`, dépendances fermées
-                                                    ├─ setup : `needs-human` si architecture absente/non acceptée ou
-                                                    │          .claude/check.json (check + arch) absent ou au gabarit
-                                                    ├─ planner (Opus)       → plan.md + ADR locales ; décision structurante → `needs-clarification`
-                                                    ├─ implementer (Sonnet) → commits TDD
-                                                    ├─ check + arch (lancés par l'orchestrateur, sans jeton) : rouge → retour à l'implementer
-                                                    │  (toucher à docs/architecture/ ou .claude/ → `needs-human`)
-                                                    ├─ 3 reviewers en parallèle (contexte vierge) → verdicts JSON liés au SHA
-                                                    ├─ rejet : corrige ; 3 itérations max (check rouge compris), sinon `needs-human`
-                                                    └─ push, PR, statut `sdlc/verdicts`, label `in-review` → TU FUSIONNES
-                                                       (opt-in par dépôt : `owner/repo automerge` → auto-merge GitHub armé)
-                                                    ambiguïté → `needs-clarification` ; tu réponds, tu remets `ready`
-sdlc-retro (hebdo) → PR sur CE dépôt : améliorations des prompts/skills/gabarits, preuves à l'appui, runs en échec inclus
+CADRAGE (toi + skills)                               USINE (serveur Orca, automatisation horaire par dépôt)
+/sdlc-framing:architect → docs/architecture/ + ADR   precheck `sdlc-gate next` : une issue ready, aucune in-progress
+   une fois par projet ; `adr <sujet>` / `revise`    /sdlc-factory:deliver dans un worktree neuf
+/sdlc-framing:challenger → brief.md (facultatif)       sdlc-gate start   → in-progress, feat/<id>, cadrage validé
+/sdlc-framing:po → spec.md (Q/R dans la spec)          planner           → plan.md ; question → posée dans la session
+   refuse sans architecture acceptée                   implementer       → commit test (rouge constaté) → commit feat
+sdlc-publish publish <id> → push main + issue ready    sdlc-gate verify  → check + arch, chemins protégés, TDD
+                                                       reviewer          → verdict JSON (3 axes) ; 3 refus → needs-human
+                                                       docs/learnings.md → apprentissages du run
+                                                       sdlc-gate deliver → push, PR « Closes #n », in-review → TU FUSIONNES
+/sdlc-framing:retro <projets> (manuel) → améliorations des plugins à partir des docs/learnings.md des projets
 ```
 
-Installation poste : `/plugin install sdlc-framing@gaetanars` (`sdlc-contract` suit en dépendance), puis dans un projet `sdlc-init-repo scaffold` (renseigner `CLAUDE.md` et `.claude/check.json`), puis `/sdlc-framing:architect init`. Installation serveur et garde-fous : [`plugins/sdlc-factory/README.md`](plugins/sdlc-factory/README.md).
+Livrables versionnés dans chaque projet, relus à chaque étape suivante :
+
+| Livrable | Écrit par | Lu par |
+|---|---|---|
+| `docs/architecture/ARCHITECTURE.md`, `native/`, `docs/adr/` | `architect` (toi) | `challenger`, `po`, planner, implementer, reviewer, `sdlc-gate` |
+| `docs/features/<id>/brief.md` (facultatif), `spec.md` | `challenger`, `po` | planner, implementer, reviewer, `sdlc-gate` |
+| `docs/features/<id>/plan.md` | usine | implementer, reviewer, toi (PR) |
+| `docs/learnings.md` | usine, `po` | tous les skills et agents ; `retro` |
+
+Installation poste : `/plugin install sdlc-framing@gaetanars` (`sdlc-contract` suit en dépendance), puis dans un projet `sdlc-init-repo scaffold`
+(renseigner `CLAUDE.md` et `.claude/check.json`), puis `/sdlc-framing:architect init`. Serveur : [`plugins/sdlc-factory/README.md`](plugins/sdlc-factory/README.md).
 
 ## Installation
 
@@ -72,7 +77,7 @@ claude plugin update sdlc-framing@gaetanars
 plugins/<plugin>/                 un dossier par plugin
   .claude-plugin/plugin.json      manifeste, seule source de la version
   skills/ agents/ commands/ hooks/ workflows/ …
-tests/                            validation des éléments et tests SDLC (unittest, stdlib) ; sdlc_fakebin/ = faux gh/claude
+tests/                            validation des éléments et tests SDLC (unittest, stdlib) ; sdlc_fakebin/ = faux gh
 .github/workflows/validate.yml    CI
 ```
 
@@ -108,10 +113,9 @@ Les plugins sont découverts depuis `marketplace.json` : un nouveau plugin est c
 | `test_hooks` | `hooks/hooks.json` | clé `hooks`, tout script `${CLAUDE_PLUGIN_ROOT}/…` existe |
 | `test_workflows` | `workflows/*.js` | bloc `meta` (`name` = fichier, `description`), syntaxe valide via `node` |
 | `test_files` | fichiers du plugin | JSON valides, Python compilable, shell valide (`bash -n`), `plugins/*/bin/` : shebang + bit exécutable (index git) |
-| `test_sdlc_validate_spec`, `test_sdlc_publish` | `sdlc-contract`, `sdlc-framing` | validateur de spec, publication, `sdlc-init-repo` (`--automerge`, scaffold `check.json`) contre un faux `gh` |
-| `test_sdlc_validate_architecture` | `sdlc-contract` | format d'architecture : sections, `rules.json` (modules, graphe acyclique, outil natif sous `docs/architecture/native/`), ADR, `--require-accepted` |
-| `test_sdlc_guard`, `test_sdlc_run_unit` | `sdlc-factory` | garde-fou (mode fermé, périmètre de la rétro), fonctions pures de `sdlc-run`/`sdlc-retro` (`collect`, `load_check`, `read_repos`) |
-| `test_sdlc_e2e` | `sdlc-factory` | `sdlc-run` de bout en bout hors ligne (faux `gh`/`claude`, dépôt git local) : gates check + arch, architecture verrouillée, merge humain/opt-in automerge, argv de `claude` |
+| `test_sdlc_validate_spec`, `test_sdlc_publish` | `sdlc-contract`, `sdlc-framing` | validateur de spec v2 (brief facultatif, décisions de cadrage), publication, `sdlc-init-repo` (labels, protection, scaffold) contre un faux `gh` |
+| `test_sdlc_validate_architecture` | `sdlc-contract` | format d'architecture v2 : sections, « Exige un ADR », configuration native citée sous `docs/architecture/native/`, ADR, `--require-accepted` |
+| `test_sdlc_gate` | `sdlc-factory` | `sdlc-gate` de bout en bout hors ligne (faux `gh`, dépôts git locaux, worktree simulant Orca) : `next`, `start` et escalades, TDD, `verify`, `review`, `deliver`, `escalate` |
 | job `actionlint` | workflows GitHub | `.github/workflows` et YAML de plugins contenant `jobs:` |
 
 Contraintes : le frontmatter doit rester en `clé: valeur` sur une ligne (lecteur stdlib volontairement minimal). La version du CLI Claude Code est figée dans `validate.yml` (`CLAUDE_CODE_VERSION`) et se met à jour à la main.
