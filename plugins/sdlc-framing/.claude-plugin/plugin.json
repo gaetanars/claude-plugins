@@ -1,7 +1,7 @@
 {
   "name": "sdlc-framing",
-  "version": "0.2.0",
-  "description": "Poste de travail : challenger (idéation), po (cadrage), publication des specs vers GitHub",
+  "version": "0.3.0",
+  "description": "Cadrage (poste ou session Orca) : challenger (idéation), architect (architecture), po (cadrage), retro (amélioration des outils), publication des specs vers GitHub",
   "author": {
     "name": "Gaëtan Ars"
   },

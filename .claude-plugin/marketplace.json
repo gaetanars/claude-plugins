@@ -10,7 +10,7 @@
     {
       "name": "sdlc-contract",
       "source": "./plugins/sdlc-contract",
-      "description": "Contrat partagé du SDLC : gabarits brief/spec/plan/ADR, schéma de verdict, conventions, contrat .claude/check.json, validateur de spec.",
+      "description": "Contrat partagé du SDLC : gabarits, schéma de verdict, conventions, contrat .claude/check.json, validateurs.",
       "category": "development",
       "keywords": [
         "sdlc",
@@ -21,7 +21,7 @@
     {
       "name": "sdlc-framing",
       "source": "./plugins/sdlc-framing",
-      "description": "Poste de travail : challenger (idéation), po (cadrage), publication des specs vers GitHub.",
+      "description": "Cadrage sur poste ou via Orca : challenger, architect, po, retro, publication des specs vers GitHub.",
       "category": "development",
       "keywords": [
         "sdlc",
