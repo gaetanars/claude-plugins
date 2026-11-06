@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Nature du dépôt
 
-Marketplace Claude Code `gaetanars` (`.claude-plugin/marketplace.json`), un plugin par dossier sous `plugins/`. Plugins actuels : `sdlc-contract` (poste + serveur), `sdlc-framing` (poste), `sdlc-factory` (serveur). `cadre` a été retiré (historique git conservé). README.md décrit installation, parcours SDLC, contribution et contrôles de CI.
+Marketplace Claude Code `gaetanars` (`.claude-plugin/marketplace.json`), un plugin par dossier sous `plugins/`. Plugins actuels : `sdlc-contract` (poste + serveur), `sdlc-framing` (poste ou session Orca), `sdlc-factory` (serveur Orca). `cadre` a été retiré (historique git conservé). README.md décrit installation, parcours SDLC, contribution et contrôles de CI.
 
 Remote : `git@github.com:gaetanars/claude-plugins.git` (renommage depuis `tdd-forge` à faire côté GitHub), branche `main`. Langue du code, des prompts et des commits : français (messages au format `feat: …`).
 
@@ -21,21 +21,22 @@ Remote : `git@github.com:gaetanars/claude-plugins.git` (renommage depuis `tdd-fo
 
 ## Plugins SDLC
 
-SDLC agentique : cadrage sur poste (`sdlc-framing`), usine sur serveur (`sdlc-factory`, orchestrateur `sdlc-run` en `claude -p`), contrat partagé (`sdlc-contract`). Merge humain par défaut ; auto-merge en opt-in par dépôt (`owner/repo automerge` dans le fichier `repos`, `sdlc-init-repo github --automerge` avec CI requise).
+SDLC agentique : cadrage interactif (`sdlc-framing`, en local ou dans une session Orca), usine sur serveur Orca (`sdlc-factory` : automatisation Orca → skill `deliver` → sous-agents + `sdlc-gate`), contrat partagé (`sdlc-contract`). Merge toujours humain, pas d'auto-merge. Amélioration continue : `docs/learnings.md` dans chaque projet (écrit par l'usine et le `po`, relu par tous) ; la rétro sur les plugins est un skill manuel (`/sdlc-framing:retro`).
 
 Règles :
-- Bibliothèque standard Python uniquement : ni dépendance, ni abstraction non demandée (donc `claude -p`, pas l'Agent SDK).
-- `plugins/sdlc-factory/{scripts/guard.py,hooks,bin,lib}` passent par une revue humaine : la rétro ne les touche pas (le hook le refuse, ainsi que `deploy/`, `schemas/`, `plugins/sdlc-*/bin/`, `tests/`, `.claude-plugin/`). `guard.py` échoue en mode fermé.
-- Un changement de format de spec incrémente `schema_version` ; validateur, `sdlc-run` et `sdlc-publish` gèrent les versions supportées.
-- Un agent ne dépend d'aucun fichier hors de son worktree, sauf via `SDLC_ALLOW_READ`.
-- Les appels `claude` utilisent `--setting-sources user` (ignore hooks/env/`.mcp.json` du dépôt cible), `--permission-mode dontAsk`, `--max-turns` par rôle (`ROLES` dans `lib/sdlc_common.py`, mêmes valeurs que le frontmatter) et un sandbox natif obligatoire. `--bare` est écarté : il désactive les hooks du plugin.
+- Bibliothèque standard Python uniquement : ni dépendance, ni abstraction non demandée. Plugins universels : aucun code propre à un langage ou à un projet.
+- Le déterministe va dans `sdlc-gate` (choix d'issue, validations, TDD, gates, verdict, push, PR, labels) ; l'enchaînement va dans le skill `deliver`. `plugins/sdlc-factory/bin/sdlc-gate` passe par une revue humaine : le skill `retro` ne le modifie pas.
+- `sdlc-gate` n'écrit jamais `.git/config` (protégé par la sandbox de Claude Code) : `--no-track`, push sans `-u`, état dans les notes git (`refs/notes/sdlc-red`, `refs/notes/sdlc-review`).
+- Un changement de format de spec ou d'architecture incrémente `schema_version` ; validateurs, `sdlc-gate` et `sdlc-publish` gèrent les versions supportées (v2 uniquement).
+- La sécurité du serveur repose sur la sandbox de Claude Code (réglages du serveur, documentés dans `plugins/sdlc-factory/README.md`), l'utilisateur Unix dédié et la relecture humaine des PR ; aucun hook dans les plugins.
 
 Couplages à relire ensemble :
-- `.claude/check.json` (`{"check": "<cmd>", "arch": "<cmd>"}`) : `sdlc-init-repo scaffold` (gabarit `A_RENSEIGNER`), `sdlc-run` (`load_check`, `run_check`, gate), agents `implementer`/`reviewer-*`, skill `architect`.
-- Architecture cadrée (`docs/architecture/{ARCHITECTURE.md,rules.json,native/}`, `docs/adr/`) : `sdlc-validate-architecture` (format de référence), skill `architect` (écrit), `po` (garde-fou avant découpage), `sdlc-publish` (exige accepté + commité), `sdlc-run` (`validate_architecture`, `protected_changes`), `guard.py` (chemin protégé), agents `planner` (remonte les décisions « Exige un ADR » en ambiguïté) et `implementer`. Aucun fichier de configuration native hors `docs/architecture/native/`. Aucun code par langage dans le SDLC : l'outil natif est choisi au cadrage.
-- Bloc d'issue `sdlc:begin` : `sdlc-publish` ↔ `sdlc-run` (`parse_block`).
-- `schema_version` : `sdlc-validate-spec`, `sdlc-run` (`SUPPORTED_SCHEMA`), `sdlc-publish`.
-- `schemas/verdict.schema.json` (contrat) : reviewers, `adjudicate`, `sdlc-retro`.
-- Fichier `repos` : `sdlc-run` (`read_repos`, suffixe `automerge`) et `sdlc-retro` (premier mot seulement).
+- `.claude/check.json` (`{"check": "<cmd>", "arch": "<cmd>"}`) : `sdlc-init-repo scaffold` (gabarit `A_RENSEIGNER`), `sdlc-gate` (`load_check`, `run_check`, `tests-red`, `verify`), agent `implementer`, skill `architect`.
+- Architecture cadrée (`docs/architecture/{ARCHITECTURE.md,native/}`, `docs/adr/`) : `sdlc-validate-architecture` (format de référence), skill `architect` (écrit, seul auteur des ADR), `po` (garde-fou avant découpage), `sdlc-publish` (exige accepté + commité), `sdlc-gate` (`start` valide, `verify` protège les chemins), agents `planner` (remonte les décisions « Exige un ADR ») et `reviewer`. Aucun fichier de configuration native hors `docs/architecture/native/`.
+- Bloc d'issue `sdlc:begin` : `sdlc-publish` ↔ `sdlc-gate` (`parse_block`).
+- `schema_version` : `sdlc-validate-spec`, `sdlc-validate-architecture`, `sdlc-gate` (`SUPPORTED_SCHEMA`), `sdlc-publish`.
+- `schemas/verdict.schema.json` (contrat) : agent `reviewer`, `sdlc-gate` (`check_verdict`, `adjudicate`, corps de PR).
+- Convention TDD en deux commits (`test` rouge puis `feat`) : `sdlc-conventions`, gabarit `plan.md`, agents `planner` et `implementer`, `sdlc-gate` (`tdd_errors`).
+- `docs/learnings.md` : gabarit `learnings.md`, `sdlc-init-repo scaffold`, skills `challenger`/`po`/`architect`/`retro`/`deliver`, agents, `sdlc-gate deliver` (seul fichier modifiable après la revue avec `plan.md`).
 
-Les tests SDLC (`tests/test_sdlc_*.py`, faux `gh`/`claude` dans `tests/sdlc_fakebin/`) tournent hors ligne. Pas d'exécution de bout en bout vérifiée (vrai `claude -p`, sandbox réel, GitHub réel, quotas) : ne pas la présenter comme acquise.
+Les tests SDLC (`tests/test_sdlc_*.py`, faux `gh` dans `tests/sdlc_fakebin/`) tournent hors ligne. Vérifié sur le serveur : essai Orca (skill depuis le prompt, worktree neuf, signature, push SSH et `gh` en sandbox). Pas de run complet de `/sdlc-factory:deliver` vérifié : ne pas le présenter comme acquis.

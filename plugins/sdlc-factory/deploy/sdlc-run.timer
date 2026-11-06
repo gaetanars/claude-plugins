@@ -1,9 +1,0 @@
-[Unit]
-Description=SDLC - déclenchement périodique
-
-[Timer]
-OnBootSec=2min
-OnUnitInactiveSec=5min
-
-[Install]
-WantedBy=timers.target

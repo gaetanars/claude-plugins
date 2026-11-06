@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Verdict d'un agent de revue",
+  "title": "Verdict du relecteur",
   "type": "object",
   "additionalProperties": false,
   "required": ["verdict", "summary", "findings"],
@@ -12,8 +12,9 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["severity", "file", "line", "issue", "evidence", "suggestion"],
+        "required": ["axis", "severity", "file", "line", "issue", "evidence", "suggestion"],
         "properties": {
+          "axis": { "enum": ["correctness", "security", "simplicity"] },
           "severity": { "enum": ["blocker", "major", "minor"] },
           "file": { "type": "string" },
           "line": { "type": "integer", "minimum": 0 },

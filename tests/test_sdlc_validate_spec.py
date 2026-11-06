@@ -7,7 +7,7 @@ from pathlib import Path
 VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc-contract/bin/sdlc-validate-spec"
 
 SPEC = """---
-schema_version: 1
+schema_version: 2
 id: 0001-hello
 title: Hello
 status: ready
@@ -30,9 +30,12 @@ Ajouter un fichier hello.txt pour valider le flux de bout en bout.
 
 ## Contraintes
 Aucune dépendance externe, fichier texte brut.
+
+## Décisions de cadrage
+- [x] Q1: Quel contenu ? → R: Une ligne libre (2026-11-04)
 """
 BRIEF = """---
-schema_version: 1
+schema_version: 2
 id: 0001-hello
 title: Hello
 ---
@@ -45,21 +48,12 @@ Valider le flux de bout en bout du SDLC sur un cas minimal.
 ## Valeur
 Confiance dans l'automate avant usage réel.
 """
-AMB = """---
-schema_version: 1
-id: 0001-hello
----
-
-# Ambiguïtés levées
-
-- [x] Q1: Quel contenu ? → R: Une ligne libre (2026-11-04)
-"""
 
 
-def make(spec=SPEC, brief=BRIEF, amb=AMB, name="0001-hello"):
+def make(spec=SPEC, brief=BRIEF, name="0001-hello"):
     d = Path(tempfile.mkdtemp()) / name
     d.mkdir()
-    for f, t in (("spec.md", spec), ("brief.md", brief), ("ambiguities.md", amb)):
+    for f, t in (("spec.md", spec), ("brief.md", brief)):
         if t is not None:
             (d / f).write_text(t, encoding="utf-8")
     return d
@@ -76,17 +70,31 @@ class ValidateSpec(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_open_question_blocks(self):
-        code, out = check(make(amb=AMB + "- [ ] Q2: Format ?\n"))
+        code, out = check(make(spec=SPEC + "- [ ] Q2: Format du fichier ?\n"))
         self.assertEqual(code, 1)
         self.assertIn("question ouverte", out)
 
-    def test_missing_file(self):
-        code, out = check(make(brief=None))
+    def test_decisions_section_required(self):
+        code, out = check(make(spec=SPEC.split("## Décisions de cadrage")[0]))
         self.assertEqual(code, 1)
-        self.assertIn("brief.md manquant", out)
+        self.assertIn("Décisions de cadrage", out)
+
+    def test_brief_is_optional(self):
+        code, out = check(make(brief=None))
+        self.assertEqual(code, 0, out)
+
+    def test_brief_validated_when_present(self):
+        code, out = check(make(brief=BRIEF.replace("## Valeur\nConfiance dans l'automate avant usage réel.\n", "")))
+        self.assertEqual(code, 1)
+        self.assertIn("brief.md : section « Valeur »", out)
+
+    def test_missing_spec(self):
+        code, out = check(make(spec=None))
+        self.assertEqual(code, 1)
+        self.assertIn("spec.md manquant", out)
 
     def test_unsupported_schema_version(self):
-        code, out = check(make(spec=SPEC.replace("schema_version: 1", "schema_version: 9")))
+        code, out = check(make(spec=SPEC.replace("schema_version: 2", "schema_version: 1")))
         self.assertEqual(code, 1)
         self.assertIn("non supporté", out)
 

@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from tests.test_sdlc_validate_architecture import write_architecture
-from tests.test_sdlc_validate_spec import AMB, BRIEF, SPEC
+from tests.test_sdlc_validate_spec import BRIEF, SPEC
 
 ROOT = Path(__file__).resolve().parents[1]
 PUBLISH = ROOT / "plugins/sdlc-framing/bin/sdlc-publish"
@@ -24,13 +24,13 @@ def sh(*a, cwd=None):
     return r.stdout.strip()
 
 
-def feature(proj, fid, title="Hello", depends="[]"):
+def feature(proj, fid, title="Hello", depends="[]", brief=True):
     d = proj / "docs/features" / fid
     d.mkdir(parents=True)
     spec = SPEC.replace("0001-hello", fid).replace("title: Hello", f"title: {title}").replace("depends_on: []", f"depends_on: {depends}")
     (d / "spec.md").write_text(spec)
-    (d / "brief.md").write_text(BRIEF.replace("0001-hello", fid))
-    (d / "ambiguities.md").write_text(AMB.replace("0001-hello", fid))
+    if brief:
+        (d / "brief.md").write_text(BRIEF.replace("0001-hello", fid))
 
 
 class Publish(unittest.TestCase):
@@ -52,9 +52,8 @@ class Publish(unittest.TestCase):
         sh("git", "config", "user.name", "t", cwd=self.proj)
         sh("git", "config", "user.email", "t@t", cwd=self.proj)
         self.state_path = self.t / "state.json"
-        self.state_path.write_text(json.dumps({"issues": {}, "prs": {}, "statuses": []}))
-        self.env = dict(os.environ, PATH=f"{FAKEBIN}{os.pathsep}{os.environ['PATH']}", FAKE_STATE=str(self.state_path),
-                        FAKE_REMOTE=str(self.remote))
+        self.state_path.write_text(json.dumps({"issues": {}, "prs": {}}))
+        self.env = dict(os.environ, PATH=f"{FAKEBIN}{os.pathsep}{os.environ['PATH']}", FAKE_STATE=str(self.state_path))
 
     def pub(self, *args):
         return subprocess.run([sys.executable, str(PUBLISH), *args], cwd=self.proj, env=self.env, capture_output=True, text=True)
@@ -78,6 +77,8 @@ class Publish(unittest.TestCase):
         self.assertIn(f"spec_sha: {head}", issue["body"])
         self.assertIn("feature_id: 0001-hello", issue["body"])
         self.assertIn("CA-1", issue["body"])
+        self.assertIn("schema_version: 2", issue["body"])
+        self.assertIn("brief.md](", issue["body"])
         self.assertIn("docs/features/0001-hello/spec.md",
                       sh("git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", "main"))
         again = self.pub("publish", "0001-hello")
@@ -86,13 +87,19 @@ class Publish(unittest.TestCase):
 
     def test_invalid_spec_publishes_nothing(self):
         feature(self.proj, "0001-hello")
-        amb = self.proj / "docs/features/0001-hello/ambiguities.md"
-        amb.write_text(amb.read_text() + "- [ ] Q2: question ouverte\n")
+        spec = self.proj / "docs/features/0001-hello/spec.md"
+        spec.write_text(spec.read_text() + "- [ ] Q2: question ouverte\n")
         r = self.pub("publish", "0001-hello")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("question ouverte", r.stderr)
         self.assertEqual(self.state()["issues"], {})
         self.assertNotIn("0001-hello", sh("git", "--git-dir", str(self.remote), "ls-tree", "-r", "--name-only", "main"))
+
+    def test_publish_without_brief(self):
+        feature(self.proj, "0001-hello", brief=False)
+        r = self.pub("publish", "0001-hello")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("brief.md", self.state()["issues"]["1"]["body"])
 
     def test_dependencies_resolved_in_order(self):
         feature(self.proj, "0001-base", title="Base")
@@ -145,12 +152,13 @@ class Publish(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("dry-run", r.stdout)
-        for label in ("ready", "in-progress", "in-review", "needs-clarification", "needs-human"):
+        for label in ("ready", "in-progress", "in-review", "needs-human"):
             self.assertIn(label, r.stdout)
-        self.assertIn("allow_auto_merge=false", r.stdout)  # merge humain par défaut
+        self.assertNotIn("needs-clarification", r.stdout)
+        self.assertIn("allow_auto_merge=false", r.stdout)  # merge toujours humain
         self.assertIn("PR ouverte, en attente de merge", r.stdout)
         body = json.loads(r.stdout.split("<<< ")[1].splitlines()[0])
-        self.assertEqual(body["required_status_checks"]["contexts"], ["sdlc/verdicts", "build"])
+        self.assertEqual(body["required_status_checks"]["contexts"], ["build"])
         self.assertFalse(body["enforce_admins"])
         # scaffold
         s = subprocess.run([sys.executable, str(INIT), "scaffold"], cwd=self.proj, capture_output=True, text=True)
@@ -163,6 +171,7 @@ class Publish(unittest.TestCase):
         self.assertEqual(s.returncode, 0, s.stderr)
         self.assertIn("## Commandes", (fresh / "CLAUDE.md").read_text())
         self.assertTrue((fresh / "docs/features/.gitkeep").exists())
+        self.assertIn("# Apprentissages", (fresh / "docs/learnings.md").read_text())
         self.assertEqual(json.loads((fresh / ".claude/check.json").read_text()), {"check": "A_RENSEIGNER", "arch": "A_RENSEIGNER"})
         self.assertIn("check.json créé", s.stdout)
         self.assertIn("/sdlc-framing:architect init", s.stdout)
@@ -171,14 +180,9 @@ class Publish(unittest.TestCase):
         s = subprocess.run([sys.executable, str(INIT), "scaffold"], cwd=fresh, capture_output=True, text=True)
         self.assertEqual(json.loads((fresh / ".claude/check.json").read_text()), {"check": "make test"})
 
-    def test_init_repo_automerge_requires_ci_context(self):
+    def test_init_repo_has_no_automerge(self):
         r = subprocess.run([sys.executable, str(INIT), "github", "owner/proj", "--automerge"], capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("--ci-context", r.stderr)
-        r = subprocess.run([sys.executable, str(INIT), "github", "owner/proj", "--automerge", "--ci-context", "build"],
-                           capture_output=True, text=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("allow_auto_merge=true", r.stdout)
 
 
 if __name__ == "__main__":

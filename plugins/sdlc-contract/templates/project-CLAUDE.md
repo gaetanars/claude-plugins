@@ -21,8 +21,7 @@ Les agents lisent cette section pour savoir comment vérifier leur travail. Elle
 
 ## SDLC
 Les commandes de vérification sont déclarées dans `.claude/check.json` (`{"check": "<tests + lint + typecheck>", "arch": "<contrôle d'architecture>"}`) :
-l'orchestrateur les exécute lui-même après chaque implémentation et refuse la revue tant que l'une est rouge.
-L'architecture (`docs/architecture/`, `docs/adr/`) est cadrée par l'humain et jamais modifiée par les agents.
-Le merge est humain par défaut (auto-merge en opt-in par dépôt).
-Le cadrage vit dans `docs/features/<id>/`, les décisions dans `docs/adr/`.
-Règles communes (KISS, TDD, commits) : voir le skill `sdlc-conventions` du plugin sdlc-contract.
+`sdlc-gate verify` les exécute lui-même et refuse la revue tant que l'une est rouge.
+L'architecture (`docs/architecture/`, `docs/adr/`) est cadrée par l'humain et jamais modifiée par l'usine. Le merge est humain.
+Le cadrage vit dans `docs/features/<id>/`, les apprentissages dans `docs/learnings.md` (à lire avant tout travail).
+Règles communes (KISS, TDD en deux commits, commits) : voir le skill `sdlc-conventions` du plugin sdlc-contract.

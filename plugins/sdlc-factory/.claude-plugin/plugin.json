@@ -1,7 +1,7 @@
 {
   "name": "sdlc-factory",
-  "version": "0.2.0",
-  "description": "Serveur de dev : agents planner/implementer/reviewers, orchestrateur sdlc-run, garde-fous, rétrospective",
+  "version": "0.3.0",
+  "description": "Usine sur serveur Orca : skill deliver (issue ready → plan → TDD vérifié → revue → PR, merge humain), agents planner/implementer/reviewer, sdlc-gate (contrôles déterministes et livraison)",
   "author": {
     "name": "Gaëtan Ars"
   },

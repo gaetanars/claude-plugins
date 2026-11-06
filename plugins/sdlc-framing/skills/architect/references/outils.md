@@ -10,10 +10,10 @@
 | Java / Kotlin | ArchUnit (test JUnit) |
 | C# | NetArchTest, ArchUnitNET |
 | Rust | cargo-deny (dépendances de crates) ; les frontières de modules internes passent par la structure en crates/workspaces |
-| Autre | un script versionné sous `docs/architecture/native/` qui lit `rules.json` et échoue sur toute dépendance interdite |
+| Autre | un script versionné sous `docs/architecture/native/` qui encode les règles de dépendance d'`ARCHITECTURE.md` et échoue sur toute dépendance interdite |
 
 ## Exigences communes
 - Configuration et baseline sous `docs/architecture/native/` uniquement ; la commande `arch` les référence par chemin explicite.
-- Les modules et dépendances de la configuration reflètent `rules.json` (même découpage, mêmes interdits).
+- Les modules et dépendances de la configuration reflètent `ARCHITECTURE.md` (même découpage, mêmes interdits).
 - Commande déterministe, sans réseau à l'exécution, code de sortie fiable.
 - Montrer qu'elle mord : une violation volontaire doit la rendre rouge.
