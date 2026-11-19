@@ -25,8 +25,9 @@ class FdmPlugin(unittest.TestCase):
     def test_manifest_metadata(self):
         m = load(PLUGIN / ".claude-plugin/plugin.json")
         self.assertEqual(m["name"], "fdm")
-        self.assertEqual(m["version"], "0.1.0")
+        self.assertEqual(m["version"], "0.2.0")
         self.assertTrue(m["description"].startswith("Préversion"))
+        self.assertIn("vérification", m["description"])
         self.assertEqual(m["author"], load(ROOT / "plugins/sdlc/.claude-plugin/plugin.json")["author"])
         self.assertEqual(m["license"], "MIT")
 
