@@ -111,5 +111,51 @@ class CheckSource(unittest.TestCase):
                             and ast.unparse(c.func.value) == "RESULTS" for _, _, c in calls(self.check)))
 
 
+class RunnerSource(unittest.TestCase):
+    def setUp(self):
+        self.tree = parse("run.py")
+
+    def test_runs_piece_as_main(self):
+        run = next(c for n, _, c in calls(self.tree) if n == "run_path")
+        self.assertEqual({k.arg: k.value.value for k in run.keywords}, {"run_name": "__main__"})
+        argv = [n.lineno for n in ast.walk(self.tree) if isinstance(n, ast.Assign)
+                and any(ast.unparse(t) == "sys.argv" for t in n.targets)]
+        self.assertTrue(argv and min(argv) < run.lineno)
+
+    def test_reads_registry(self):
+        imports = [n for n in ast.walk(self.tree) if isinstance(n, ast.ImportFrom)]
+        self.assertTrue(any(n.module == "fdm_tools.check" and "RESULTS" in [a.name for a in n.names] for n in imports))
+
+    def test_no_check_message(self):
+        self.assertTrue(has_string(self.tree, "aucun check() appelé : la pièce n'est pas vérifiée")
+                        ["aucun check() appelé : la pièce n'est pas vérifiée"])
+
+    def test_nonzero_system_exit_propagates(self):
+        handlers = [h for n in ast.walk(self.tree) if isinstance(n, ast.Try) for h in n.handlers
+                    if handler_names(h) == {"SystemExit"}]
+        self.assertTrue(any(isinstance(x, ast.Raise) for h in handlers for x in ast.walk(ast.Module(h.body, []))))
+
+
+class ExampleSource(unittest.TestCase):
+    def setUp(self):
+        self.tree = parse("examples/calibration_cube.py")
+
+    def test_example_uses_public_api(self):
+        imports = [n for n in self.tree.body if isinstance(n, ast.ImportFrom)]
+        self.assertTrue(any(n.module == "fdm_tools" and "check" in [a.name for a in n.names] for n in imports))
+        cs = [c for n, _, c in calls(self.tree) if n == "check"]
+        self.assertTrue(any(len(c.args) == 2 and ast.unparse(c.args[1]) == "'out/calibration_cube'" for c in cs))
+        self.assertNotIn("insert", [n for n, _, _ in calls(self.tree)])
+        self.assertFalse([s for s in strings(self.tree) if "tools" in s.split("/") or s == "tools"])
+        self.assertNotIn("tools", {n.id for n in ast.walk(self.tree) if isinstance(n, ast.Name)})
+
+    def test_example_geometry(self):
+        consts = [n.value for n in ast.walk(self.tree) if isinstance(n, ast.Constant)]
+        self.assertIn(20.0, consts)
+        self.assertIn(5.0, consts)
+        chamfer = next(c for n, _, c in calls(self.tree) if n == "chamfer")
+        self.assertEqual(chamfer.args[1].value, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
