@@ -35,7 +35,10 @@ def requirements_hash():
 
 def build_venv(interp, data, digest):
     """Construit le venv dans un dossier temporaire ; renvoie son chemin ou lève RuntimeError."""
-    tmp = Path(tempfile.mkdtemp(dir=data, prefix="venv.tmp-"))
+    try:
+        tmp = Path(tempfile.mkdtemp(dir=data, prefix="venv.tmp-"))
+    except OSError as e:
+        raise RuntimeError(str(e))
     try:
         for cmd in ([interp, "-m", "venv", str(tmp)],
                     [str(tmp / "bin/python"), "-m", "pip", "install", "-r", str(REQUIREMENTS)]):
@@ -69,10 +72,10 @@ def main():
     if not args.force and stamp.is_file() and stamp.read_text().strip() == digest:
         print(f"venv à jour : {venv}")
         return
-    data.mkdir(parents=True, exist_ok=True)
     try:
+        data.mkdir(parents=True, exist_ok=True)
         tmp = build_venv(args.python, data, digest)
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         sys.exit(f"erreur : {e}")
     old = None
     if venv.exists():
