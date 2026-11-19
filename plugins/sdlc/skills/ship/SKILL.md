@@ -7,7 +7,7 @@ description: Brique SDLC : capitalise les apprentissages dans docs/learnings.md 
 
 Prérequis : verdict `approve` enregistré (`/sdlc:review`) et ta revue finale faite. Tu ne modifies pas le code ici.
 
-1. **Apprentissages** : si le run a appris quelque chose de réutilisable (finding corrigé qui se reproduira, correction demandée à la revue finale, clarification qui aurait dû être cadrée, gate rouge récurrent),
+1. **Apprentissages** : si le run a appris quelque chose de réutilisable (finding corrigé qui se reproduira, correction demandée à la revue finale, clarification qui aurait dû être cadrée, gate rouge récurrent, arbitrage des « Décisions de cadrage » de la spec valable pour la suite),
    ajoute une ligne par fait à `docs/learnings.md` (`- AAAA-MM-JJ [<id ou slug>] constat → règle à appliquer`) ; retire une ligne devenue fausse. Rien de réutilisable : n'ajoute rien.
    Commit `docs(<id ou slug>): apprentissages`. Seuls `learnings.md` et `plan.md` peuvent changer après le verdict.
 2. **Gate humaine** : récapitule (branche, commits, verdict, apprentissages) et demande « J'ouvre la PR ? ». **Sans accord explicite : arrête-toi** (la branche reste locale, rien n'est poussé).

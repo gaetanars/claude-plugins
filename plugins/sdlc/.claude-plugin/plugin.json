@@ -1,6 +1,6 @@
 {
   "name": "sdlc",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "SDLC AI-First interactif : triage, spec, architecture, plan, TDD vérifié, revue indépendante, livraison en PR (merge humain), apprentissages par projet",
   "author": {
     "name": "Gaëtan Ars"

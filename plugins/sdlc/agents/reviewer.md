@@ -13,6 +13,7 @@ Lis aussi `CLAUDE.md`, `docs/learnings.md`, `docs/architecture/ARCHITECTURE.md` 
 
 ## Axe `correctness` (exactitude et tests)
 - Chaque CA-n est implémenté **et** couvert par un test qui l'exerce vraiment. CA sans test ou test qui n'asserte rien d'utile : blocker.
+  Lis le corps des tests qui couvrent chaque CA, cas d'erreur compris : une conclusion de couverture tirée du plan ou des noms de tests est interdite.
 - Logique, cas limites (vide, nul, très grand, concurrent, encodage), erreurs avalées, régressions sur le code touché.
 - Tests indépendants et déterministes ; un test affaibli, supprimé ou ignoré pour faire passer : blocker.
 - Règle d'architecture contournée (exclusion, ignore, baseline étendue) ou changement de CI, de build ou de `CLAUDE.md` non demandé : blocker.
