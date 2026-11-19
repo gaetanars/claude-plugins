@@ -17,7 +17,8 @@ class FdmPlugin(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         e = entries[0]
         self.assertEqual(e["source"], "./plugins/fdm")
-        self.assertTrue(e["description"].startswith("Préversion"))
+        self.assertNotIn("Préversion", e["description"])
+        self.assertIn("découpe", e["description"])
         self.assertEqual(e["category"], "design")
         self.assertEqual(e["keywords"], ["3d-printing", "fdm", "bambu-lab", "build123d"])
         self.assertNotIn("version", e)
@@ -25,9 +26,10 @@ class FdmPlugin(unittest.TestCase):
     def test_manifest_metadata(self):
         m = load(PLUGIN / ".claude-plugin/plugin.json")
         self.assertEqual(m["name"], "fdm")
-        self.assertEqual(m["version"], "0.2.0")
-        self.assertTrue(m["description"].startswith("Préversion"))
+        self.assertEqual(m["version"], "1.0.0")
+        self.assertNotIn("Préversion", m["description"])
         self.assertIn("vérification", m["description"])
+        self.assertIn("découpe", m["description"])
         self.assertEqual(m["author"], load(ROOT / "plugins/sdlc/.claude-plugin/plugin.json")["author"])
         self.assertEqual(m["license"], "MIT")
 
@@ -48,6 +50,19 @@ class FdmPlugin(unittest.TestCase):
             self.assertTrue(cfg[key]["title"], key)
             self.assertTrue(cfg[key]["description"], key)
             self.assertEqual(cfg[key]["default"], default, key)
+
+    def test_plugin_readme(self):
+        text = (PLUGIN / "README.md").read_text(encoding="utf-8")
+        keys = load(PLUGIN / ".claude-plugin/plugin.json")["userConfig"]
+        self.assertEqual(len(keys), 6)
+        for s in ("Bambu Studio", "3.11", "3.14", "300 Mo", "/plugin install fdm@gaetanars", "fdm-setup",
+                  "fdm-profiles", "/fdm:design", "parts/", "out/", "non vérifié", *keys):
+            self.assertIn(s, text)
+
+    def test_root_readme(self):
+        text = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertTrue(any(l.startswith("| `fdm` | 1.0.0 |") for l in text.splitlines()))
+        self.assertIn("/plugin install fdm@gaetanars", text)
 
     def test_requirements_pinned(self):
         lines = [l.strip() for l in (PLUGIN / "requirements.txt").read_text().splitlines() if l.strip()]
