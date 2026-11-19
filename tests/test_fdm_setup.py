@@ -169,6 +169,34 @@ class Setup(unittest.TestCase):
         self.assertFalse((self.data / "venv").exists())
         self.assertEqual(self.leftovers(), [])
 
+    def assert_clean_failure(self, r, path):
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(path), r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_data_is_a_file(self):
+        self.data.write_text("x")
+        self.assert_clean_failure(self.setup(), self.data)
+
+    def test_data_not_creatable(self):
+        parent = self.t / "ro"
+        parent.mkdir()
+        parent.chmod(0o500)
+        self.addCleanup(parent.chmod, 0o700)
+        if os.access(parent, os.W_OK):
+            self.skipTest("dossier inscriptible malgré chmod (root)")
+        self.data = parent / "data"
+        self.assert_clean_failure(self.setup(), self.data)
+
+    def test_data_not_writable(self):
+        self.data.mkdir()
+        self.data.chmod(0o500)
+        self.addCleanup(self.data.chmod, 0o700)
+        if os.access(self.data, os.W_OK):
+            self.skipTest("dossier inscriptible malgré chmod (root)")
+        self.assert_clean_failure(self.setup(), self.data)
+        self.assertEqual(self.leftovers(), [])
+
     def test_usage_errors(self):
         self.assertEqual(self.run_setup("--bogus").returncode, 2)
         self.assertEqual(self.run_setup("--python").returncode, 2)
