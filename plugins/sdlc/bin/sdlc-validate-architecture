@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""sdlc-validate-architecture [--require-accepted] <docs/architecture> — valide le cadrage d'architecture d'un projet.
+
+Contrôles : ARCHITECTURE.md (frontmatter, sections, liste « Exige un ADR »), configuration de l'outil natif citée dans
+« Contrôle mécanique » et présente sous docs/architecture/native/ (seul emplacement protégé), cohérence des ADR
+(docs/adr/, frère du dossier docs/architecture/).
+--require-accepted : refuse `status: draft` (sdlc-gate l'exige).
+Sortie : 0 = valide ; 1 = erreurs listées sur stderr ; 2 = usage.
+"""
+import re
+import sys
+from pathlib import Path
+
+SUPPORTED_SCHEMA = {"2"}
+STATUSES = {"draft", "accepted"}
+SECTIONS = ["Contexte et objectifs", "Stack", "Modules", "Règles de dépendance", "Principes et interdits",
+            "Exige un ADR", "Contrôle mécanique"]
+NATIVE_REF = re.compile(r"docs/architecture/native/[^\s`'\"),;]+")
+ADR_STATUS = re.compile(r"^(Accepté|Proposé|Déprécié|Remplacé par (\d{4}))\b")  # début de la 1re ligne : tolère un commentaire derrière
+PLACEHOLDERS = re.compile(r"\b(TODO|TBD|FIXME|NNNN)\b|\?\?\?|à définir|a definir", re.I)
+FENCE = re.compile(r"^```.*?^```", re.S | re.M)
+
+
+def parse_frontmatter(text):
+    m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
+    if not m:
+        return None, text
+    fm = {}
+    for line in m.group(1).splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            fm[k.strip()] = v.strip()
+    return fm, m.group(2)
+
+
+def sections(body):
+    out, cur = {}, None
+    for line in body.splitlines():
+        m = re.match(r"##\s+(.+?)\s*$", line)
+        if m:
+            cur = m.group(1)
+            out[cur] = []
+        elif cur is not None:
+            out[cur].append(line)
+    return {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+def check_adrs(adir, errs):
+    d = adir.parent / "adr"
+    if not d.is_dir():
+        return
+    numbers = {}
+    for p in sorted(d.glob("*.md")):
+        m = re.match(r"(\d{4})-", p.name)
+        if not m:
+            continue
+        if m.group(1) in numbers:
+            errs.append(f"docs/adr : numéro {m.group(1)} dupliqué ({numbers[m.group(1)]}, {p.name})")
+        numbers[m.group(1)] = p.name
+    for p in sorted(d.glob("*.md")):
+        if not re.match(r"\d{4}-", p.name):
+            continue
+        sec = sections(p.read_text(encoding="utf-8"))
+        st = (sec.get("Statut", "").strip().splitlines() or [""])[0].strip()
+        m = ADR_STATUS.match(st)
+        if not m:
+            errs.append(f"docs/adr/{p.name} : Statut invalide {st!r} (Accepté, Proposé, Déprécié, Remplacé par NNNN)")
+        elif m.group(2) and m.group(2) not in numbers:
+            errs.append(f"docs/adr/{p.name} : remplacée par l'ADR {m.group(2)} qui n'existe pas")
+
+
+def validate(adir: Path, require_accepted=False):
+    if not adir.is_dir():
+        return [f"{adir.name}/ absent : cadrer l'architecture avec /sdlc:architect"]
+    md = adir / "ARCHITECTURE.md"
+    if not md.is_file():
+        return ["ARCHITECTURE.md manquant"]
+    errs = []
+    text = md.read_text(encoding="utf-8")
+    fm, body = parse_frontmatter(text)
+    if fm is None:
+        errs.append("ARCHITECTURE.md : frontmatter absent")
+    else:
+        if fm.get("schema_version") not in SUPPORTED_SCHEMA:
+            errs.append(f"ARCHITECTURE.md : schema_version {fm.get('schema_version')!r} non supporté (attendu {sorted(SUPPORTED_SCHEMA)})")
+        if fm.get("status") not in STATUSES:
+            errs.append(f"ARCHITECTURE.md : status doit être draft ou accepted (reçu {fm.get('status')!r})")
+        elif require_accepted and fm["status"] != "accepted":
+            errs.append("ARCHITECTURE.md : status draft : valider l'architecture avec /sdlc:architect")
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", fm.get("updated", "")):
+            errs.append("ARCHITECTURE.md : updated doit être AAAA-MM-JJ")
+    secs = sections(body)
+    for s in SECTIONS:
+        if s not in secs:
+            errs.append(f"ARCHITECTURE.md : section « {s} » manquante")
+        elif len(secs[s]) < 10:
+            errs.append(f"ARCHITECTURE.md : section « {s} » vide ou trop courte")
+    if not re.search(r"^\s*[-*] \S", secs.get("Exige un ADR", ""), re.M):
+        errs.append("ARCHITECTURE.md : « Exige un ADR » doit lister au moins un élément")
+    for line in FENCE.sub("", text).splitlines():
+        if PLACEHOLDERS.search(line):
+            errs.append(f"ARCHITECTURE.md : marqueur d'incomplétude : {line.strip()[:80]!r}")
+            break
+    refs = NATIVE_REF.findall(secs.get("Contrôle mécanique", ""))
+    if not refs:
+        errs.append("ARCHITECTURE.md : « Contrôle mécanique » doit citer la configuration de l'outil natif "
+                    "sous docs/architecture/native/")
+    for r in refs:
+        r = r.rstrip(".")
+        if ".." in r or not (adir.parent.parent / r).exists():
+            errs.append(f"ARCHITECTURE.md : configuration native introuvable : {r}")
+    check_adrs(adir, errs)
+    return errs
+
+
+def main(argv):
+    args = [a for a in argv[1:] if a != "--require-accepted"]
+    if len(args) != 1:
+        print(__doc__, file=sys.stderr)
+        return 2
+    adir = Path(args[0]).resolve()
+    errs = validate(adir, "--require-accepted" in argv[1:])
+    if errs:
+        print(f"Architecture invalide ({len(errs)} erreur(s)) :", file=sys.stderr)
+        for e in errs:
+            print(f"- {e}", file=sys.stderr)
+        return 1
+    print("OK : architecture")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

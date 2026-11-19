@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""sdlc-next-id <slug> — prochain identifiant d'unité de travail NNNN-slug (numérotation de docs/features/)."""
+import re
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+
+
+def slugify(s):
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-") or "feature"
+
+
+def next_id(slug):
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode:
+        sys.exit("pas dans un dépôt git")
+    fdir = Path(top.stdout.strip()) / "docs" / "features"
+    nums = [int(m.group(1)) for p in fdir.glob("*") if (m := re.match(r"(\d{4})-", p.name))] if fdir.is_dir() else []
+    # une spec vit sur sa branche feat/<id> jusqu'au merge : ses numéros sont réservés (branches locales et origin)
+    refs = subprocess.run(["git", "for-each-ref", "--format=%(refname)", "refs/heads/feat", "refs/remotes/origin/feat"],
+                          capture_output=True, text=True).stdout.splitlines()
+    nums += [int(m.group(1)) for r in refs if (m := re.search(r"/feat/(\d{4})-", r))]
+    return f"{max(nums, default=0) + 1:04d}-{slugify(slug)}"
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    print(next_id(sys.argv[1]))

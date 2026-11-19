@@ -1,45 +1,22 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "gaetanars",
-  "description": "Plugins Claude Code de Gaëtan Ars : SDLC agentique (cadrage interactif, usine autonome sur serveur Orca, merge humain).",
+  "description": "Plugins Claude Code de Gaëtan Ars : SDLC AI-First interactif (triage, spec, plan, TDD vérifié, revue indépendante, PR, merge humain).",
   "owner": {
     "name": "Gaëtan Ars",
     "url": "https://github.com/gaetanars"
   },
   "plugins": [
     {
-      "name": "sdlc-contract",
-      "source": "./plugins/sdlc-contract",
-      "description": "Contrat partagé du SDLC : gabarits, schéma de verdict, conventions, contrat .claude/check.json, validateurs.",
+      "name": "sdlc",
+      "source": "./plugins/sdlc",
+      "description": "SDLC AI-First interactif : /sdlc:go (triage trivial/standard/feature), spec, architecture, plan, build TDD, revue indépendante, ship (PR, merge humain), apprentissages par projet.",
       "category": "development",
       "keywords": [
         "sdlc",
         "spec",
-        "contract"
-      ]
-    },
-    {
-      "name": "sdlc-framing",
-      "source": "./plugins/sdlc-framing",
-      "description": "Cadrage sur poste ou via Orca : challenger, architect, po, retro, publication des specs vers GitHub.",
-      "category": "development",
-      "keywords": [
-        "sdlc",
-        "spec",
-        "po",
-        "framing"
-      ]
-    },
-    {
-      "name": "sdlc-factory",
-      "source": "./plugins/sdlc-factory",
-      "description": "Usine sur serveur Orca : skill deliver, agents planner/implementer/reviewer, sdlc-gate (TDD vérifié, gates, livraison en PR).",
-      "category": "development",
-      "keywords": [
-        "sdlc",
-        "agents",
-        "orchestrator",
-        "ci"
+        "tdd",
+        "review"
       ]
     }
   ]

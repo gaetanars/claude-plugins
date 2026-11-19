@@ -1,0 +1,471 @@
+#!/usr/bin/env python3
+"""sdlc-gate — contrôles déterministes et livraison du SDLC interactif (appelé par les skills du plugin sdlc).
+
+  sdlc-gate start <id>               spec acceptée et validée (+ architecture acceptée si parcours feature) : crée ou reprend
+                                     feat/<id>, commite docs/features/<id>/{brief,spec}.md ; affiche un JSON
+  sdlc-gate start --trivial <slug>   crée ou reprend fix/<slug> (parcours trivial, sans spec ni plan)
+  sdlc-gate tests-red                HEAD est un commit test(...) et `check` est rouge : le constate (note git)
+  sdlc-gate verify                   check (et arch) verts, chemins protégés intacts, plan avant tests, TDD respecté
+  sdlc-gate review < verdict.json    enregistre le verdict du relecteur sur HEAD
+                                     (0 approve, 2 corrections demandées, 3 plafond d'itérations atteint → l'humain tranche)
+  sdlc-gate deliver                  verdict approve sur le dernier commit de code, verify, push de la branche, PR
+                                     (à n'appeler qu'après l'accord explicite de l'humain)
+
+État : git seulement (branche feat/<id> ou fix/<slug>, notes refs/notes/sdlc-red et refs/notes/sdlc-review).
+N'écrit jamais .git/config (protégé par la sandbox de Claude Code). Bibliothèque standard uniquement.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+MAX_ITER = int(os.environ.get("SDLC_MAX_ITER", "3"))
+CHECK_TIMEOUT = int(os.environ.get("SDLC_CHECK_TIMEOUT", "1800"))
+CHECK_TAIL = 3000
+SUPPORTED_SCHEMA = {"3"}
+PLACEHOLDER = "A_RENSEIGNER"  # valeur posée par `sdlc-init-repo scaffold`
+SECRET_VARS = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "ANTHROPIC_API_KEY")
+PROTECTED = ["docs/architecture", "docs/adr", ".claude", ".github"]
+AXES = ("correctness", "security", "simplicity")
+SEVERITIES = ("blocker", "major", "minor")
+RED, REVIEW = "sdlc-red", "sdlc-review"
+TYPE_RE = re.compile(r"^(\w+)(\([^)]*\))?!?:")
+ID_RE = re.compile(r"^\d{4}-[a-z0-9]+(-[a-z0-9]+)*$")
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+
+class Fail(Exception):
+    pass
+
+
+# ---------------------------------------------------------------- outils
+
+def sh(*args, check=True, input=None):
+    r = subprocess.run([str(a) for a in args], capture_output=True, text=True, input=input)
+    if check and r.returncode:
+        raise Fail(f"{' '.join(map(str, args))[:200]} → code {r.returncode}\n{(r.stderr or r.stdout).strip()[:1500]}")
+    return r.stdout.strip()
+
+
+def git(*a, **kw):
+    return sh("git", *a, **kw)
+
+
+def gh(*a, **kw):
+    return sh("gh", *a, **kw)
+
+
+def ghjson(*a):
+    return json.loads(gh(*a) or "null")
+
+
+def tool(name):
+    """Outil du plugin : dossier de ce script (bin/), sinon PATH."""
+    sibling = Path(__file__).resolve().parent / name
+    if sibling.exists():
+        return str(sibling)
+    found = shutil.which(name)
+    if found:
+        return found
+    raise Fail(f"{name} introuvable")
+
+
+def frontmatter(path):
+    m = re.match(r"---\n(.*?)\n---", Path(path).read_text(encoding="utf-8"), re.S)
+    return {k.strip(): v.strip() for k, v in (l.split(":", 1) for l in m.group(1).splitlines() if ":" in l)} if m else {}
+
+
+def ctype(subject):
+    m = TYPE_RE.match(subject)
+    return m.group(1) if m else ""
+
+
+def adjudicate(verdict):
+    """approve ⇔ le relecteur approuve ET aucun finding blocker/major. Retourne (verdict effectif, ajusté ?)."""
+    blocking = [f for f in verdict["findings"] if f["severity"] in ("blocker", "major")]
+    effective = "approve" if verdict["verdict"] == "approve" and not blocking else "changes_requested"
+    return effective, effective != verdict["verdict"]
+
+
+def check_verdict(v):
+    """Contrôle minimal du schéma verdict.schema.json (le contrat est porté par schemas/verdict.schema.json)."""
+    if not isinstance(v, dict) or v.get("verdict") not in ("approve", "changes_requested") or not str(v.get("summary", "")).strip():
+        raise Fail("verdict invalide : verdict (approve|changes_requested) et summary obligatoires")
+    if not isinstance(v.get("findings"), list):
+        raise Fail("verdict invalide : findings doit être une liste")
+    for f in v["findings"]:
+        if not isinstance(f, dict) or f.get("axis") not in AXES or f.get("severity") not in SEVERITIES \
+                or not str(f.get("issue", "")).strip() or not str(f.get("evidence", "")).strip() \
+                or not isinstance(f.get("file"), str) or not isinstance(f.get("line"), int) or isinstance(f.get("line"), bool):
+            raise Fail(f"finding invalide (axis, severity, file, line, issue et evidence obligatoires) : {json.dumps(f, ensure_ascii=False)[:300]}")
+
+
+# ---------------------------------------------------------------- dépôt
+
+def default_branch():
+    head = git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+    return head.split("/", 1)[1] if "/" in head else "main"
+
+
+def current():
+    """Contexte déduit de la branche : ("feat", id, défaut) ou ("fix", slug, défaut)."""
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    for kind in ("feat", "fix"):
+        if branch.startswith(kind + "/"):
+            return kind, branch[len(kind) + 1:], default_branch()
+    raise Fail(f"branche courante {branch!r} : lancer `sdlc-gate start` d'abord")
+
+
+def arch_accepted():
+    """Architecture présente, valide et acceptée : (ok, message)."""
+    if not Path("docs/architecture/ARCHITECTURE.md").is_file():
+        return False, "docs/architecture/ARCHITECTURE.md absent : cadrer avec /sdlc:architect init"
+    r = subprocess.run([tool("sdlc-validate-architecture"), "--require-accepted", "docs/architecture"], capture_output=True, text=True)
+    return r.returncode == 0, (r.stderr or r.stdout).strip()[:1500]
+
+
+# ---------------------------------------------------------------- vérifications
+
+def load_check(require_arch=False):
+    """Commandes de `.claude/check.json` : {"check", "arch"?} ; Fail si absente, illisible ou encore au gabarit.
+    `arch` est facultatif, sauf `require_arch` (architecture acceptée)."""
+    f = Path(".claude/check.json")
+    if not f.is_file():
+        raise Fail(".claude/check.json est absent")
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        cmds = {k: data.get(k) for k in ("check", "arch")}
+    except (ValueError, AttributeError) as e:
+        raise Fail(f".claude/check.json illisible : {e}") from None
+    out = {}
+    for k, cmd in cmds.items():
+        if cmd is None and k == "arch" and not require_arch:
+            continue
+        if not isinstance(cmd, str) or not cmd.strip() or cmd.strip() == PLACEHOLDER:
+            raise Fail(f'.claude/check.json : "{k}" est vide, absent ou encore au gabarit' + (" (architecture acceptée : obligatoire)" if k == "arch" else ""))
+        out[k] = cmd.strip()
+    return out
+
+
+def run_check(cmd):
+    """Exécute une commande du contrat dans le worktree, sans jeton : {ok, code, cmd, tail}."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_VARS}
+    try:
+        r = subprocess.run(cmd, shell=True, env=env, capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+        code, out = r.returncode, (r.stdout or "") + (r.stderr or "")
+    except subprocess.TimeoutExpired as e:
+        partial = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        code, out = 124, f"délai dépassé ({CHECK_TIMEOUT}s)\n{partial}"
+    return {"ok": code == 0, "code": code, "cmd": cmd, "tail": out.strip()[-CHECK_TAIL:]}
+
+
+def note(ref, sha):
+    return git("notes", f"--ref={ref}", "show", sha, check=False)
+
+
+def review_of(sha):
+    raw = note(REVIEW, sha)
+    return json.loads(raw) if raw else None
+
+
+def commits(base):
+    """Commits de la branche depuis la base : [(sha, type Conventional Commits, fichiers touchés)]."""
+    out = []
+    for sha in git("rev-list", "--reverse", f"{base}..HEAD").split():
+        subject = git("log", "-1", "--format=%s", sha)
+        files = set(git("diff-tree", "--no-commit-id", "--name-only", "-r", sha).splitlines())
+        out.append((sha, ctype(subject), files))
+    return out
+
+
+def tdd_errors(cs):
+    errs = []
+    for i, (sha, typ, files) in enumerate(cs):
+        prev = next((c for c in reversed(cs[:i]) if c[1] != "docs"), None)  # un commit docs (plan, clarifications) ne coupe pas test → feat
+        if typ == "test" and not note(RED, sha):
+            errs.append(f"{sha[:7]} : commit test sans rouge constaté (lancer `sdlc-gate tests-red` juste après ce commit)")
+        if typ == "feat" and not (prev and prev[1] == "test"):
+            errs.append(f"{sha[:7]} : commit feat non précédé d'un commit test")
+        if prev and prev[1] == "test" and files & prev[2]:
+            errs.append(f"{sha[:7]} : modifie des fichiers du commit de tests {prev[0][:7]} : {', '.join(sorted(files & prev[2]))[:300]}")
+    return errs
+
+
+def spec_commit(fid, base):
+    """Plus ancien commit `docs(<id>): spec` de la branche (comparaison en Python : indépendante de grep.patternType)."""
+    rows = [l.split("\0", 1) for l in git("log", "--format=%H%x00%s", f"{base}..HEAD").splitlines()]
+    return next((sha for sha, subject in reversed(rows) if subject == f"docs({fid}): spec"), None)
+
+
+def verify(kind, ident, default):
+    if git("status", "--porcelain"):
+        raise Fail("arbre de travail non propre : commiter ou annuler les modifications")
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    errs = [f"chemin protégé modifié : {p} (architecture, contrat de vérification et CI ne changent que par l'humain)"
+            for p in git("diff", "--name-only", base, "HEAD", "--", *PROTECTED).splitlines()]
+    cs = commits(base)
+    if kind == "feat":
+        fdir = f"docs/features/{ident}"
+        sc = spec_commit(ident, base)
+        if not sc:
+            errs.append(f"commit `docs({ident}): spec` absent : la spec doit être commitée par `sdlc-gate start`")
+        else:
+            errs += [f"chemin protégé modifié : {p} (la spec est figée depuis {sc[:7]} : un changement de besoin = nouvelle unité)"
+                     for p in git("diff", "--name-only", sc, "HEAD", "--", f"{fdir}/spec.md", f"{fdir}/brief.md").splitlines()]
+        plan = f"{fdir}/plan.md"
+        plan_i = next((i for i, (_, _, files) in enumerate(cs) if plan in files), None)
+        test_i = next((i for i, (_, typ, _) in enumerate(cs) if typ == "test"), None)
+        if plan_i is None:
+            errs.append(f"{plan} non commité : le plan, validé par l'humain, précède l'implémentation")
+        elif test_i is not None and plan_i > test_i:
+            errs.append(f"{plan} commité après le premier commit test : le plan précède les tests")
+    errs += tdd_errors(cs)
+    cmds = load_check(require_arch=arch_accepted()[0])
+    for k in ("check", "arch"):
+        if k in cmds:
+            r = run_check(cmds[k])
+            if not r["ok"]:
+                errs.append(f"{k} rouge (`{r['cmd']}`, code {r['code']}) :\n{r['tail']}")
+    return errs
+
+
+# ---------------------------------------------------------------- sous-commandes
+
+def dirty_paths():
+    """Chemins modifiés ou non suivis (`status --porcelain -z`, sans strip : les colonnes d'état restent intactes)."""
+    r = subprocess.run(["git", "status", "--porcelain", "-z", "--untracked-files=all"], capture_output=True, text=True)
+    if r.returncode:
+        raise Fail(f"git status → code {r.returncode}\n{r.stderr.strip()[:500]}")
+    paths, parts = [], r.stdout.split("\0")
+    i = 0
+    while i < len(parts) and parts[i]:
+        paths.append(parts[i][3:])
+        i += 2 if parts[i][0] in "RC" else 1  # renommage : le chemin d'origine suit
+    return paths
+
+
+def sync_default():
+    """Exige d'être sur la branche par défaut, identique à origin (après le fetch de `start`)."""
+    default = default_branch()
+    if git("rev-parse", "--abbrev-ref", "HEAD") != default:
+        raise Fail(f"démarrer depuis la branche par défaut {default!r}")
+    if git("rev-parse", "HEAD") != git("rev-parse", f"origin/{default}"):
+        raise Fail(f"{default} n'est pas à jour avec origin/{default} : synchroniser d'abord")
+    return default
+
+
+def switch_branch(branch, default):
+    """Bascule sur la branche (reprise si elle existe, en local ou sur origin) sinon la crée depuis HEAD. Retourne resumed."""
+    if git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False):
+        git("switch", branch)
+        return True
+    if git("ls-remote", "--heads", "origin", branch):
+        git("switch", "--no-track", "-c", branch, f"origin/{branch}")
+        return True
+    git("switch", "--no-track", "-c", branch, f"origin/{default}")
+    return False
+
+
+def cmd_start(a):
+    if bool(a.id) == bool(a.trivial):
+        raise Fail("un seul argument : `start <id>` ou `start --trivial <slug>`")
+    status = dirty_paths()
+    if a.trivial:
+        if not SLUG_RE.match(a.trivial):
+            raise Fail(f"slug {a.trivial!r} invalide (minuscules, chiffres et tirets)")
+        if status:
+            raise Fail("arbre de travail non propre : commiter ou annuler les modifications")
+        git("fetch", "origin", "--prune")
+        default = default_branch()
+        branch = f"fix/{a.trivial}"
+        if git("rev-parse", "--abbrev-ref", "HEAD") != branch:
+            sync_default()
+            resumed = switch_branch(branch, default)
+        else:
+            resumed = True
+        load_check(require_arch=arch_accepted()[0])
+        print(json.dumps({"track": "trivial", "slug": a.trivial, "branch": branch, "resumed": resumed,
+                          "default_branch": default}, ensure_ascii=False))
+        return 0
+    fid = a.id
+    if not ID_RE.match(fid):
+        raise Fail(f"identifiant {fid!r} invalide (attendu NNNN-slug)")
+    fdir = f"docs/features/{fid}"
+    own = {f"{fdir}/spec.md", f"{fdir}/brief.md"}
+    others = [p for p in status if p not in own]
+    if others:
+        raise Fail("arbre de travail non propre hors de la spec et du brief : " + ", ".join(others)[:300])
+    branch = f"feat/{fid}"
+    git("fetch", "origin", "--prune")
+    default = default_branch()
+    if git("rev-parse", "--abbrev-ref", "HEAD") == branch:
+        resumed = True
+    elif git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", check=False) or git("ls-remote", "--heads", "origin", branch):
+        if status:
+            raise Fail(f"la branche {branch} existe déjà : reprise impossible avec des modifications non commitées")
+        resumed = switch_branch(branch, default)
+    else:
+        sync_default()
+        resumed = None  # branche créée après validation, pour ne rien changer si la spec est refusée
+    sc = spec_commit(fid, git("merge-base", "HEAD", f"origin/{default}")) if resumed else None
+    if sc:
+        frozen = [p for p in status if p in own] + git("diff", "--name-only", sc, "HEAD", "--", *sorted(own)).splitlines()
+        if frozen:
+            raise Fail(f"spec figée depuis {sc[:7]} : {', '.join(sorted(set(frozen)))} modifié (un changement de besoin = nouvelle unité)")
+    if not Path(fdir, "spec.md").is_file():
+        raise Fail(f"{fdir}/spec.md absent")
+    r = subprocess.run([tool("sdlc-validate-spec"), fdir], capture_output=True, text=True)
+    if r.returncode:
+        raise Fail((r.stderr or r.stdout).strip()[:1500])
+    fm = frontmatter(f"{fdir}/spec.md")
+    if fm.get("schema_version") not in SUPPORTED_SCHEMA:
+        raise Fail(f"schema_version {fm.get('schema_version')!r} non supporté (attendu {sorted(SUPPORTED_SCHEMA)})")
+    if fm.get("status") != "accepted":
+        raise Fail(f"spec en status {fm.get('status')!r} : elle doit être acceptée par l'humain (status: accepted)")
+    deps = [d.strip().strip("'\"") for d in fm.get("depends_on", "").strip("[]").split(",") if d.strip()]
+    missing = [d for d in deps if subprocess.run(["git", "cat-file", "-e", f"origin/{default}:docs/features/{d}/spec.md"],
+                                                 capture_output=True).returncode]
+    if missing:
+        raise Fail(f"dépendances non mergées sur {default} : {', '.join(missing)} (livrer et merger ces unités d'abord)")
+    ok, msg = arch_accepted()
+    if fm["track"] == "feature" and not ok:
+        raise Fail("parcours feature : architecture acceptée exigée\n" + msg)
+    load_check(require_arch=ok)
+    if resumed is None:
+        git("switch", "--no-track", "-c", branch)  # depuis HEAD = origin/<défaut> ; la spec non commitée suit
+        resumed = False
+    if not sc:  # commit de référence de la spec ; vide si elle est déjà sur la branche par défaut
+        git("add", "--", *[p for p in (f"{fdir}/brief.md", f"{fdir}/spec.md") if Path(p).is_file()])
+        git("commit", "--allow-empty", "-m", f"docs({fid}): spec", "-m", f"Feature: {fid}")
+    print(json.dumps({"track": fm["track"], "id": fid, "title": fm.get("title"), "branch": branch, "resumed": resumed,
+                      "spec": f"{fdir}/spec.md", "brief": f"{fdir}/brief.md" if Path(fdir, "brief.md").exists() else None,
+                      "plan": f"{fdir}/plan.md", "default_branch": default, "architecture": ok}, ensure_ascii=False))
+    return 0
+
+
+def cmd_tests_red(_):
+    current()
+    if git("status", "--porcelain"):
+        raise Fail("arbre de travail non propre : commiter les tests d'abord")
+    head = git("rev-parse", "HEAD")
+    if ctype(git("log", "-1", "--format=%s", head)) != "test":
+        raise Fail("HEAD n'est pas un commit test(...) : commiter les tests seuls d'abord")
+    r = run_check(load_check()["check"])
+    if r["ok"]:
+        raise Fail("`check` est vert : les nouveaux tests doivent échouer avant l'implémentation")
+    git("notes", f"--ref={RED}", "add", "-f", "-m", f"rouge constaté (code {r['code']})", head)
+    print(f"rouge constaté sur {head[:7]} (code {r['code']})\n{r['tail'][-800:]}")
+    return 0
+
+
+def cmd_verify(_):
+    kind, ident, default = current()
+    errs = verify(kind, ident, default)
+    if errs:
+        print("\n".join(f"- {e}" for e in errs), file=sys.stderr)
+        return 1
+    print("OK : check (et arch) verts, chemins protégés intacts, plan avant tests, TDD respecté")
+    return 0
+
+
+def cmd_review(_):
+    kind, ident, default = current()
+    try:
+        v = json.load(sys.stdin)
+    except ValueError as e:
+        raise Fail(f"verdict illisible : {e}") from None
+    check_verdict(v)
+    effective, adjusted = adjudicate(v)
+    head = git("rev-parse", "HEAD")
+    rec = {"verdict": effective, "declared": v["verdict"], "adjusted": adjusted, "summary": v["summary"], "findings": v["findings"]}
+    git("notes", f"--ref={REVIEW}", "add", "-f", "-m", json.dumps(rec, ensure_ascii=False), head)
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    rejected = sum(1 for sha, _, _ in commits(base) if (r := review_of(sha)) and r["verdict"] == "changes_requested")
+    print(json.dumps({"verdict": effective, "adjusted": adjusted, "rejections": rejected, "max": MAX_ITER}, ensure_ascii=False))
+    if effective == "approve":
+        return 0
+    if rejected >= MAX_ITER:
+        print(f"plafond de {MAX_ITER} revues non approuvées atteint : arrêt, l'humain tranche.", file=sys.stderr)
+        return 3
+    return 2
+
+
+def pr_body(kind, ident, rec, iterations):
+    count = {(a, s): 0 for a in AXES for s in SEVERITIES}
+    for f in rec["findings"]:
+        count[(f["axis"], f["severity"])] += 1
+    rows = "\n".join(f"| {a} | " + " | ".join(str(count[(a, s)]) for s in SEVERITIES) + " |" for a in AXES)
+    minors = "\n".join(f"- [{f['axis']}] `{f['file']}:{f['line']}` — {f['issue']}" for f in rec["findings"]) or "- aucun"
+    cadrage = (f"Cadrage : `docs/features/{ident}/spec.md` · `docs/features/{ident}/plan.md` · `docs/learnings.md`\n"
+               if kind == "feat" else "Correctif trivial : ni spec ni plan.\n")
+    return f"""`{ident}` : TDD vérifié (tests rouges constatés avant chaque `feat`), `check` verts, revue indépendante approuvée
+après {iterations} itération(s), revue finale humaine faite en session. **Merge humain.**
+
+| Axe | blocker | major | minor |
+|-----|---------|-------|-------|
+{rows}
+
+Résumé du relecteur : {rec['summary']}
+
+Findings restants :
+{minors}
+
+{cadrage}"""
+
+
+def cmd_deliver(_):
+    kind, ident, default = current()
+    branch = f"{kind}/{ident}"
+    base = git("merge-base", "HEAD", f"origin/{default}")
+    cs = commits(base)
+    reviewed = [i for i, (sha, _, _) in enumerate(cs) if review_of(sha)]
+    if not reviewed:
+        raise Fail("aucun verdict enregistré : `sdlc-gate review` d'abord")
+    last = reviewed[-1]
+    rec = review_of(cs[last][0])
+    if rec["verdict"] != "approve":
+        raise Fail(f"dernier verdict ({cs[last][0][:7]}) : {rec['verdict']}")
+    allowed = {"docs/learnings.md"} | ({f"docs/features/{ident}/plan.md"} if kind == "feat" else set())
+    later = set().union(*(files for _, _, files in cs[last + 1:]))
+    if later - allowed:
+        raise Fail(f"commits postérieurs à la revue hors apprentissages et plan : {', '.join(sorted(later - allowed))[:300]}")
+    errs = verify(kind, ident, default)
+    if errs:
+        raise Fail("verify en échec :\n" + "\n".join(f"- {e}" for e in errs))
+    title = frontmatter(f"docs/features/{ident}/spec.md").get("title") if kind == "feat" else None
+    title = title or git("log", "-1", "--format=%s", cs[0][0])
+    git("push", "origin", f"HEAD:refs/heads/{branch}")
+    existing = ghjson("pr", "list", "--head", branch, "--state", "open", "--json", "number")
+    if existing:
+        print(f"PR #{existing[0]['number']} déjà ouverte : branche poussée à jour")
+        return 0
+    url = gh("pr", "create", "--base", default, "--head", branch, "--title", title,
+             "--body-file", "-", input=pr_body(kind, ident, rec, len(reviewed)))
+    print(f"PR ouverte : {url}")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    st = sub.add_parser("start")
+    st.add_argument("id", nargs="?")
+    st.add_argument("--trivial", metavar="SLUG")
+    for name in ("tests-red", "verify", "review", "deliver"):
+        sub.add_parser(name)
+    a = ap.parse_args()
+    handler = {"start": cmd_start, "tests-red": cmd_tests_red, "verify": cmd_verify,
+               "review": cmd_review, "deliver": cmd_deliver}[a.cmd]
+    try:
+        return handler(a)
+    except Fail as e:
+        print(f"sdlc-gate {a.cmd} : {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
