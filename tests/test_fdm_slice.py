@@ -181,6 +181,88 @@ class Slice(unittest.TestCase):
         for k in changed:
             self.assertTrue(Path(k).is_relative_to(self.out), k)
 
+    def assert_clean_failure(self, r, *texts, launched=False):
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+        for t in texts:
+            self.assertIn(t, r.stderr)
+        if not launched:
+            self.assertEqual(self.calls(), [])
+
+    def test_no_data_dir(self):
+        r = self.go("out/p.stl", data=False)
+        self.assert_clean_failure(r, "--data", "CLAUDE_PLUGIN_DATA")
+
+    def test_missing_profile(self):
+        for k in ("machine", "process", "filament"):
+            with self.subTest(profil=k):
+                f = self.data / "profiles" / f"{k}.json"
+                f.unlink()
+                self.assert_clean_failure(self.go("out/p.stl"), str(f), "fdm-profiles")
+                f.write_text("{}")
+
+    def test_bad_stl(self):
+        (self.project / "out/d.stl").mkdir()
+        (self.project / "out/p.txt").write_text("solid")
+        for stl in ("out/none.stl", "out/d.stl", "out/p.txt"):
+            with self.subTest(stl=stl):
+                self.assert_clean_failure(self.go(stl), stl)
+
+    def test_exe_not_executable(self):
+        plain = self.t / "plain"
+        plain.write_text("x")
+        plain.chmod(0o644)
+        for exe in (plain, self.t / "absent"):
+            with self.subTest(exe=exe.name):
+                r = run("--data", str(self.data), "--bambu-studio", str(exe), "out/p.stl",
+                        cwd=self.project, FAKE_LOG=str(self.log))
+                self.assert_clean_failure(r, str(exe), "bambu_studio")
+
+    def test_non_macos_requires_exe(self):
+        for extra in ([], ["--bambu-studio", ""]):
+            with self.subTest(extra=extra):
+                r = run("--data", str(self.data), *extra, "out/p.stl", platform="linux",
+                        cwd=self.project, FAKE_LOG=str(self.log))
+                self.assert_clean_failure(r, "bambu_studio", "--bambu-studio")
+
+    @unittest.skipIf(os.path.exists(MAC_EXE), "vrai Bambu Studio présent")
+    def test_macos_default_exe(self):
+        r = run("--data", str(self.data), "--bambu-studio", "", "out/p.stl", platform="darwin",
+                cwd=self.project, FAKE_LOG=str(self.log))
+        self.assert_clean_failure(r, MAC_EXE)
+
+    def test_out_is_a_file(self):
+        self.out.write_text("file")
+        self.assert_clean_failure(self.go("out/p.stl"), str(self.out))
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignore les permissions")
+    def test_out_not_writable(self):
+        self.out.mkdir()
+        (self.out / "plate_1.gcode").write_text(GCODE_OK)
+        self.out.chmod(0o500)
+        self.addCleanup(self.out.chmod, 0o700)
+        r = self.go("out/p.stl")
+        self.assert_clean_failure(r, str(self.out))
+        self.assertTrue((self.out / "plate_1.gcode").exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignore les permissions")
+    def test_data_not_writable(self):
+        for d in (self.data / "profiles", self.data):
+            d.chmod(0o500)
+            self.addCleanup(d.chmod, 0o700)
+        r = self.go("out/p.stl", FAKE_GCODE=GCODE_OK)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_launch_oserror(self):
+        bad = self.t / "bad"
+        bad.write_bytes(b"\x00\x01\x02\x03binary")
+        bad.chmod(0o755)
+        r = run("--data", str(self.data), "--bambu-studio", str(bad), "out/p.stl",
+                cwd=self.project, FAKE_LOG=str(self.log))
+        self.assert_clean_failure(r, str(bad))
+
+
     def test_imports_stdlib_only(self):
         tree = ast.parse(SCRIPT.read_text())
         roots = set()
