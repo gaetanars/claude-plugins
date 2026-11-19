@@ -80,7 +80,10 @@ def main():
             print(f"{kind}: {names[kind]} ({len(profiles[kind])} keys)")
     except OSError as e:
         for tmp in tmps.values():
-            tmp.unlink(missing_ok=True)
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
         sys.exit(f"erreur : écriture dans {out} impossible : {e}")
 
 
