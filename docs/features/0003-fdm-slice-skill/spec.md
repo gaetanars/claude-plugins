@@ -1,0 +1,59 @@
+---
+schema_version: 3
+id: 0003-fdm-slice-skill
+title: Découpe fdm-slice, skill fdm:design et version 1.0.0
+track: feature
+status: accepted
+depends_on: [0002-fdm-check-run]
+---
+
+# Découpe fdm-slice, skill fdm:design et version 1.0.0
+
+## Contexte
+Troisième et dernière unité du plugin `fdm` (voir `docs/features/0001-fdm-plugin/brief.md`, Q7 de `0001-fdm-plugin`) ; les unités 1 (venv, profils) et 2 (`fdm_tools.check`, `fdm-run`, cube de calibration) sont fusionnées. Elle porte `tools/slice.sh` de `~/3d-design` en commande Python `fdm-slice` (ADR-0001, ADR-0004), le skill `fdm-design` d'origine en skill `fdm:design`, et publie le plugin en 1.0.0 avec sa documentation.
+Valeur : critère de succès du brief. Sur macOS, une fois le plugin installé, `fdm-setup` puis `fdm-profiles` lancés, `/fdm:design` produit le cube de calibration avec `OK`, un rendu PNG et une découpe donnant le temps et le poids, sans autre intervention.
+
+## Périmètre
+- `plugins/fdm/bin/fdm-slice` : portage de `slice.sh` en bibliothèque standard.
+- `plugins/fdm/skills/design/SKILL.md` : skill `fdm:design`, portage en français de `~/3d-design/.claude/skills/fdm-design/SKILL.md`, rendu générique (imprimante Bambu configurable).
+- `plugins/fdm/README.md` : README du plugin.
+- `README.md` racine : ligne `fdm` dans la table des plugins et commande d'installation.
+- `plugins/fdm/.claude-plugin/plugin.json` : version `1.0.0`, « Préversion » retirée de la description ; même retrait dans l'entrée `fdm` de `.claude-plugin/marketplace.json`.
+- Tests hors ligne dans `tests/`.
+
+## Hors périmètre
+- Modifier `fdm-setup`, `fdm-profiles`, `fdm-run`, `fdm_tools` ou `requirements.txt`.
+- Exécuter Bambu Studio, build123d ou le venv dans les tests et la CI (ADR-0002).
+- Délai maximal de découpe, détection automatique de Bambu Studio sous Linux, Windows, autres slicers.
+- Hook de démarrage de session ; `usb_cable_organizer.py` ; toute modification de `~/3d-design` (suppression manuelle après livraison, avec accord explicite).
+
+## Critères d'acceptation
+- [ ] CA-1: `python3 -m unittest discover -s tests -t .` passe : `test_files` (`fdm-slice` exécutable avec shebang `#!/usr/bin/env python3`, Python compilable), `test_skills` (frontmatter du skill `design`), `test_cli_validate`, `test_plugins` et `test_fdm_plugin` (version `1.0.0`, descriptions de `plugin.json` et de l'entrée marketplace sans « Préversion »).
+- [ ] CA-2: `python3 docs/architecture/native/check_arch.py` sort en 0 : `fdm-slice` n'importe que la bibliothèque standard et n'importe jamais `fdm_tools`.
+- [ ] CA-3: `fdm-slice [--data DIR] [--bambu-studio PATH] STL` : dossier de données depuis `--data`, sinon `CLAUDE_PLUGIN_DATA` ; absent des deux → sortie 1 avec un message sur stderr nommant `--data` et `CLAUDE_PLUGIN_DATA`. Option inconnue ou `STL` manquant → sortie 2 via `argparse`. `fdm-slice` n'utilise pas le venv.
+- [ ] CA-4: `fdm-slice` sort en 1 sans lancer Bambu Studio, avec un message sur stderr, si : l'un de `<data>/profiles/machine.json`, `process.json`, `filament.json` est absent (message citant le fichier et renvoyant vers `fdm-profiles`) ; `STL` n'est pas un fichier existant ou n'a pas l'extension `.stl` (message citant le chemin) ; l'exécutable Bambu Studio n'est pas un fichier exécutable (message citant le chemin et l'option `bambu_studio`). Exécutable : `--bambu-studio` s'il est non vide, sinon `/Applications/BambuStudio.app/Contents/MacOS/BambuStudio` sous macOS ; hors macOS sans valeur, sortie en 1 avec un message demandant de renseigner l'option `bambu_studio` (`--bambu-studio`).
+- [ ] CA-5: Sinon `fdm-slice` crée `OUT` = `<dossier absolu du STL>/slice_<nom>` (`<nom>` = nom du STL sans `.stl`), supprime `OUT/plate_1.gcode` et `OUT/<nom>.3mf` s'ils existent, puis lance, dans le répertoire courant inchangé : `<exe> --debug 1 --load-settings "<P>/machine.json;<P>/process.json" --load-filaments "<P>/filament.json" --arrange 1 --orient 0 --slice 0 --export-3mf <nom>.3mf --outputdir <OUT> <STL>` (`<P>` = `<data>/profiles`), stdout et stderr capturés ensemble. Une `OSError` à la création, à la suppression ou au lancement donne une sortie 1 avec un message citant le chemin, sans `Traceback`.
+- [ ] CA-6: Si `OUT/plate_1.gcode` est absent après l'exécution, quel que soit le code de sortie de Bambu Studio : sortie 1, les 40 dernières lignes de la sortie capturée qui ne contiennent pas `[trace]` sur stderr, puis un message indiquant l'échec de la découpe et renvoyant vers `fdm-profiles` (profils à régénérer après une mise à jour de Bambu Studio).
+- [ ] CA-7: Si le gcode est présent : `fdm-slice` affiche sur stdout, dans l'ordre du fichier, la première ligne qui commence par `; model printing time`, `; total filament weight [g]` et `; total filament length [mm]`, puis `Output: <OUT>/<nom>.3mf`, et sort en 0. Si la ligne de temps ou de poids manque : sortie 1, avec un message citant le gcode. La sortie de Bambu Studio n'est pas affichée en cas de succès.
+- [ ] CA-8: Tests de `fdm-slice` hors ligne, en bibliothèque standard : faux Bambu Studio (script exécutable passé par `--bambu-studio`, qui consigne argv et cwd et écrit ou non un `plate_1.gcode` choisi, éventuellement sans ligne de poids) couvrant CA-3 à CA-7, dont : un gcode périmé préexistant n'est pas pris pour un succès ; `<data>` ou `OUT` non inscriptible ne produit pas de `Traceback`.
+- [ ] CA-9: `plugins/fdm/skills/design/SKILL.md` : frontmatter `name: design` et une `description` déclenchée par toute demande de conception, modification, vérification ou découpe d'une pièce à imprimer en 3D ; pas de `disable-model-invocation`. Le corps, en français, reprend le déroulé d'origine (clarifier, esquisser, écrire `parts/<nom>.py`, lancer, regarder le rendu, découper, rendre compte en français, itérer), la table des règles FDM (valeurs par défaut pour une buse 0.4 et du PLA, présentées comme telles, sans volume d'impression en dur : il vient de la sortie de `check()`) et les conseils build123d.
+- [ ] CA-10: Le skill commence par vérifier la présence de `${CLAUDE_PLUGIN_DATA}/venv/bin/python` et des trois profils ; s'il en manque un, il propose seulement `fdm-setup --data "${CLAUDE_PLUGIN_DATA}" --python "${user_config.python}"` et/ou `fdm-profiles --data "${CLAUDE_PLUGIN_DATA}" --machine "${user_config.machine}" --process "${user_config.process}" --filament "${user_config.filament}" --profiles-dir "${user_config.bambu_profiles}"`, et ne fait rien d'autre tant qu'ils manquent. Les pièces se lancent avec `fdm-run --data "${CLAUDE_PLUGIN_DATA}" parts/<nom>.py`, la découpe se fait avec `fdm-slice --data "${CLAUDE_PLUGIN_DATA}" --bambu-studio "${user_config.bambu_studio}" out/<nom>.stl`. Le skill explique que `sys.path[0]` est la racine du projet (imports relatifs à la racine), qu'il faut un `check()` par pièce imprimable (sinon sortie 1), que l'on importe `from fdm_tools import check`, et il cite `${CLAUDE_PLUGIN_ROOT}/lib/fdm_tools/examples/calibration_cube.py` comme modèle.
+- [ ] CA-11: Un test hors ligne lit `SKILL.md` : chaque commande `fdm-*` citée existe dans `plugins/fdm/bin/` ; chaque invocation de `fdm-setup`, `fdm-profiles`, `fdm-run` et `fdm-slice` porte `--data "${CLAUDE_PLUGIN_DATA}"` ; le chemin `${CLAUDE_PLUGIN_ROOT}/lib/fdm_tools/examples/calibration_cube.py` existe dans le plugin.
+- [ ] CA-12: `plugins/fdm/README.md` décrit les prérequis (Bambu Studio installé, Python 3.11 à 3.14, accès réseau et environ 300 Mo au premier `fdm-setup`), l'installation (`/plugin install fdm@gaetanars`), la mise en route (`fdm-setup` puis `fdm-profiles`, à relancer après une mise à jour de Bambu Studio), l'usage (`/fdm:design`, `parts/` et `out/` dans le projet), les six options `userConfig` et le statut Linux « non vérifié » (chemins `bambu_studio` et `bambu_profiles` obligatoires). Le README racine contient une ligne `fdm` en version `1.0.0` dans la table des plugins et sa commande d'installation.
+- [ ] CA-13: Vérification manuelle consignée en revue, sur la machine de l'auteur (macOS), avec le plugin installé depuis le clone local de la branche et un venv et des profils réels : depuis un dossier de projet vide, `/fdm:design` produit le cube de calibration avec `OK` (sortie 0 de `fdm-run`), lit `out/calibration_cube.png`, et `fdm-slice` affiche le temps, le poids et le chemin du `.3mf` (sortie 0). Ensuite, `fdm-slice` avec un faux profil `machine.json` invalide sort en 1 avec le renvoi vers `fdm-profiles`. Les fichiers de test sont supprimés ensuite.
+
+## Contraintes
+- Architecture : modules `fdm` (commande `fdm-slice`, skill) ; règles R1 à R4 de `check_arch.py` ; aucune dépendance tierce ; aucune modification de `docs/architecture/` ni des ADR.
+- `fdm-slice` : bibliothèque standard, shebang `#!/usr/bin/env python3`, pas de réseau, aucune écriture hors de `OUT`. Codes : 0, 1 (message actionnable sur stderr), 2 (usage). Une valeur vide pour `--bambu-studio` vaut absence (le skill passe `${user_config.bambu_studio}`, vide par défaut). Messages en français, comme les autres commandes `fdm-*`.
+- Les options sont passées en arguments explicites par le skill : `${user_config.*}` n'est pas substitué dans l'environnement des commandes `bin/` (cf. `docs/learnings.md`).
+- Sorties de découpe sous `out/slice_<nom>/` du projet, comme l'original (ADR-0004) : rien n'est écrit dans le plugin ni sous `<data>`.
+- API `fdm_tools` inchangée (`from fdm_tools import check`, `check(part, out)`).
+- Compatibilité : macOS vérifié, Linux best effort.
+- Diff visé ≲ 400 lignes.
+
+## Décisions de cadrage
+- [x] Q1: Découpage et identifiant ? → R: Unité 3 de la feature (Q7 de `0001-fdm-plugin`) : `fdm-slice`, skill, README, 1.0.0 ; identifiant `0003-fdm-slice-skill`, `depends_on: [0002-fdm-check-run]` ; aucune entrée « Exige un ADR » concernée (`fdm-slice` déjà prévue dans le module `fdm`, sorties sous `out/` comme l'original). (2026-11-19)
+- [x] Q2: Comportement de `fdm-slice` ? → R: Portage fidèle de `slice.sh` en Python stdlib, sans venv, mêmes options de la CLI Bambu. Sorties dans `<dossier du STL>/slice_<nom>/`. L'ancien `plate_1.gcode` et l'ancien `.3mf` sont supprimés avant la découpe. Le succès se juge sur la présence du gcode. La sortie de Bambu Studio est capturée et n'est affichée qu'en cas d'échec (40 dernières lignes sans `[trace]`). En cas de succès : lignes temps, poids et longueur, puis le chemin du `.3mf` ; sortie en 1 si la ligne de temps ou de poids manque. Pas de délai maximal. (2026-11-19)
+- [x] Q3: Forme du skill `fdm:design` ? → R: Portage en français, invocable par le modèle. Prérequis (venv, profils) vérifiés en tête : s'ils manquent, le skill ne propose que `fdm-setup` / `fdm-profiles` avec les options `${user_config.*}`. `--data "${CLAUDE_PLUGIN_DATA}"` est passé à chaque commande. Règles génériques (buse 0.4, PLA par défaut), volume d'impression lu dans la sortie de `check()`. Explication de `runpy` (imports à la racine, un `check()` par pièce) et renvoi au cube d'exemple du plugin. (2026-11-19)
+- [x] Q4: Documentation, version et vérification ? → R: `plugins/fdm/README.md` et une ligne `fdm` dans le README racine ; version `1.0.0`, « Préversion » retirée de `plugin.json` et de l'entrée marketplace. Le critère de succès du brief est vérifié à la main en revue, avec le plugin installé depuis le clone local. (2026-11-19)
+- [x] Q5: Erreurs et tests de `fdm-slice` ? → R: Codes 0 / 1 / 2. Sortie en 1 sans lancer Bambu Studio si `<data>` est absent, si un profil manque (renvoi vers `fdm-profiles`), si le STL est introuvable ou n'est pas en `.stl`, ou si l'exécutable est introuvable (hors macOS sans valeur : renvoi vers l'option `bambu_studio`). Une `OSError` donne un message citant le chemin, sans `Traceback`. Si la découpe échoue : renvoi vers `fdm-profiles`. Tests : faux Bambu Studio, manifeste en 1.0.0, test de cohérence du skill (commandes et exemple cités existants). (2026-11-19)

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Découpe un STL avec la CLI Bambu Studio et affiche temps, poids et chemin du .3mf."""
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+MAC_EXE = "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio"
+PREFIXES = ("; model printing time", "; total filament weight [g]", "; total filament length [mm]")
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--data")
+    ap.add_argument("--bambu-studio")
+    ap.add_argument("stl")
+    args = ap.parse_args()
+
+    data = args.data or os.environ.get("CLAUDE_PLUGIN_DATA")
+    if not data:
+        sys.exit("erreur : dossier de données absent, passer --data ou définir CLAUDE_PLUGIN_DATA")
+    p = Path(data) / "profiles"
+    for kind in ("machine", "process", "filament"):
+        if not (p / f"{kind}.json").is_file():
+            sys.exit(f"erreur : profil absent : {p / f'{kind}.json'}, lancer fdm-profiles")
+    stl = args.stl
+    if not os.path.isfile(stl) or not stl.endswith(".stl"):
+        sys.exit(f"erreur : STL introuvable ou sans extension .stl : {stl}")
+    exe = args.bambu_studio
+    if not exe:
+        if sys.platform != "darwin":
+            sys.exit("erreur : exécutable Bambu Studio requis hors macOS, renseigner l'option bambu_studio (--bambu-studio)")
+        exe = MAC_EXE
+    if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+        sys.exit(f"erreur : exécutable Bambu Studio introuvable ou non exécutable : {exe}, renseigner l'option bambu_studio (--bambu-studio)")
+
+    name = os.path.basename(stl)[:-4]
+    out = Path(os.path.abspath(os.path.dirname(stl))) / f"slice_{name}"
+    gcode = out / "plate_1.gcode"
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        sys.exit(f"erreur : création de {out} impossible : {e}")
+    for f in (gcode, out / f"{name}.3mf"):
+        try:
+            f.unlink(missing_ok=True)
+        except OSError as e:
+            sys.exit(f"erreur : suppression de {f} impossible : {e}")
+    try:
+        r = subprocess.run(
+            [exe, "--debug", "1", "--load-settings", f"{p}/machine.json;{p}/process.json",
+             "--load-filaments", f"{p}/filament.json", "--arrange", "1", "--orient", "0", "--slice", "0",
+             "--export-3mf", f"{name}.3mf", "--outputdir", str(out), stl],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
+    except OSError as e:
+        sys.exit(f"erreur : lancement de {exe} impossible : {e}")
+
+    if not gcode.is_file():
+        tail = [l for l in r.stdout.splitlines() if "[trace]" not in l][-40:]
+        print("\n".join(tail), file=sys.stderr)
+        sys.exit(f"erreur : découpe échouée ({gcode} absent) ; après une mise à jour de Bambu Studio, relancer fdm-profiles")
+
+    try:
+        lines = gcode.read_text(errors="replace").splitlines()
+    except OSError as e:
+        sys.exit(f"erreur : lecture de {gcode} impossible : {e}")
+    found = {}
+    for line in lines:
+        for pre in PREFIXES:
+            if line.startswith(pre) and pre not in found:
+                found[pre] = line
+    if PREFIXES[0] not in found or PREFIXES[1] not in found:
+        sys.exit(f"erreur : temps ou poids absent de {gcode}")
+    print("\n".join(found.values()))
+    print(f"Output: {out}/{name}.3mf")
+
+
+if __name__ == "__main__":
+    main()
