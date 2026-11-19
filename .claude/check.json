@@ -1,0 +1,4 @@
+{
+  "check": "python3 -m unittest discover -s tests -t .",
+  "arch": "python3 docs/architecture/native/check_arch.py"
+}

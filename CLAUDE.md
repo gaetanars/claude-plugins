@@ -18,6 +18,7 @@ Remote : `git@github.com:gaetanars/claude-plugins.git` (renommage depuis `tdd-fo
 
 - `python3 -m unittest discover -s tests -t . -v` (un module par type d'élément ; `BASE_REF=origin/main` active le contrôle de bump). Même commande en CI (`.github/workflows/validate.yml`), qui ajoute `actionlint`.
 - `claude plugin validate --strict .` ne valide que la marketplace ; chaque plugin se valide séparément (`claude plugin validate --strict plugins/<p>`), ce que fait `tests/test_cli_validate.py`.
+- Architecture (`docs/architecture/ARCHITECTURE.md`, ADR dans `docs/adr/`) : `python3 docs/architecture/native/check_arch.py` (bibliothèque standard, rien à installer ; champ `arch` de `.claude/check.json`). La modifier passe par `/sdlc:architect revise`.
 
 ## Plugin SDLC
 
