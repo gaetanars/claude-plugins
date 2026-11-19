@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc-contract/bin/sdlc-validate-architecture"
+VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc/bin/sdlc-validate-architecture"
 
 ARCH_MD = """---
 schema_version: 2
@@ -68,7 +68,7 @@ class ValidateArchitecture(unittest.TestCase):
     def test_absent_directory(self):
         r = validate(Path(tempfile.mkdtemp()))
         self.assertEqual(r.returncode, 1)
-        self.assertIn("/sdlc-framing:architect", r.stderr)
+        self.assertIn("/sdlc:architect", r.stderr)
 
     def test_usage(self):
         self.assertEqual(subprocess.run([sys.executable, str(VALIDATOR)], capture_output=True, text=True).returncode, 2)

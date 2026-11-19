@@ -4,13 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc-contract/bin/sdlc-validate-spec"
+VALIDATOR = Path(__file__).resolve().parents[1] / "plugins/sdlc/bin/sdlc-validate-spec"
 
 SPEC = """---
-schema_version: 2
+schema_version: 3
 id: 0001-hello
 title: Hello
-status: ready
+track: feature
+status: accepted
 depends_on: []
 ---
 
@@ -35,7 +36,7 @@ Aucune dépendance externe, fichier texte brut.
 - [x] Q1: Quel contenu ? → R: Une ligne libre (2026-11-04)
 """
 BRIEF = """---
-schema_version: 2
+schema_version: 3
 id: 0001-hello
 title: Hello
 ---
@@ -47,6 +48,28 @@ Valider le flux de bout en bout du SDLC sur un cas minimal.
 
 ## Valeur
 Confiance dans l'automate avant usage réel.
+"""
+
+
+STANDARD = """---
+schema_version: 3
+id: 0001-hello
+title: Hello
+track: standard
+status: accepted
+depends_on: []
+---
+
+# Hello
+
+## Contexte
+Corriger le contenu de hello.txt qui est vide aujourd'hui.
+
+## Critères d'acceptation
+- [ ] CA-1: Le fichier hello.txt contient au moins une ligne non vide.
+
+## Décisions de cadrage
+- [x] Q1: Quel contenu ? → R: Une ligne libre (2026-11-04)
 """
 
 
@@ -94,7 +117,7 @@ class ValidateSpec(unittest.TestCase):
         self.assertIn("spec.md manquant", out)
 
     def test_unsupported_schema_version(self):
-        code, out = check(make(spec=SPEC.replace("schema_version: 2", "schema_version: 1")))
+        code, out = check(make(spec=SPEC.replace("schema_version: 3", "schema_version: 2")))
         self.assertEqual(code, 1)
         self.assertIn("non supporté", out)
 
@@ -118,9 +141,23 @@ class ValidateSpec(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("incomplétude", out)
 
-    def test_status_must_be_ready(self):
-        code, out = check(make(spec=SPEC.replace("status: ready", "status: draft")))
+    def test_status_and_track(self):
+        code, out = check(make(spec=SPEC.replace("status: accepted", "status: draft")))
+        self.assertEqual(code, 0, out)  # draft valide ; `accepted` est exigé par sdlc-gate start
+        code, out = check(make(spec=SPEC.replace("status: accepted", "status: ready")))
         self.assertEqual(code, 1)
+        self.assertIn("draft ou accepted", out)
+        code, out = check(make(spec=SPEC.replace("track: feature", "track: autre")))
+        self.assertEqual(code, 1)
+        self.assertIn("track", out)
+
+    def test_standard_track_needs_fewer_sections(self):
+        std = STANDARD
+        code, out = check(make(spec=std))
+        self.assertEqual(code, 0, out)
+        code, out = check(make(spec=std.replace("## Décisions de cadrage", "## Autre")))
+        self.assertEqual(code, 1)
+        self.assertIn("Décisions de cadrage", out)
 
     def test_out_of_scope_needs_a_bullet(self):
         code, out = check(make(spec=SPEC.replace("- Toute autre fonctionnalité.", "Rien.")))

@@ -1,0 +1,17 @@
+{
+  "name": "sdlc",
+  "version": "0.1.0",
+  "description": "SDLC AI-First interactif : triage, spec, architecture, plan, TDD vérifié, revue indépendante, livraison en PR (merge humain), apprentissages par projet",
+  "author": {
+    "name": "Gaëtan Ars"
+  },
+  "homepage": "https://github.com/gaetanars/claude-plugins/tree/main/plugins/sdlc",
+  "repository": "https://github.com/gaetanars/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "sdlc",
+    "spec",
+    "tdd",
+    "review"
+  ]
+}
