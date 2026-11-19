@@ -70,14 +70,18 @@ def main():
         sys.exit(f"erreur : {e}")
 
     out = Path(data) / "profiles"
-    out.mkdir(parents=True, exist_ok=True)
-    tmps = {}
-    for kind in KINDS:
-        tmps[kind] = out / f"{kind}.json.tmp"
-        tmps[kind].write_text(json.dumps(profiles[kind], indent=2) + "\n")
-    for kind in KINDS:
-        os.replace(tmps[kind], out / f"{kind}.json")
-        print(f"{kind}: {names[kind]} ({len(profiles[kind])} keys)")
+    tmps = {kind: out / f"{kind}.json.tmp" for kind in KINDS}
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        for kind in KINDS:
+            tmps[kind].write_text(json.dumps(profiles[kind], indent=2) + "\n")
+        for kind in KINDS:
+            os.replace(tmps[kind], out / f"{kind}.json")
+            print(f"{kind}: {names[kind]} ({len(profiles[kind])} keys)")
+    except OSError as e:
+        for tmp in tmps.values():
+            tmp.unlink(missing_ok=True)
+        sys.exit(f"erreur : écriture dans {out} impossible : {e}")
 
 
 if __name__ == "__main__":
