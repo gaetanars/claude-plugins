@@ -1,7 +1,7 @@
 {
   "name": "fdm",
-  "version": "0.1.0",
-  "description": "Préversion : conception de pièces imprimables en FDM pour imprimantes Bambu Lab, modélisées en build123d (installation de l'environnement CAO et des profils)",
+  "version": "0.2.0",
+  "description": "Préversion : conception de pièces imprimables en FDM pour imprimantes Bambu Lab, modélisées en build123d (installation de l'environnement CAO et des profils, vérification des pièces)",
   "author": {
     "name": "Gaëtan Ars"
   },
