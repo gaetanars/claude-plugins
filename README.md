@@ -6,7 +6,7 @@ Marketplace de plugins [Claude Code](https://code.claude.com), validée en CI à
 
 | Plugin | Version | Description |
 |---|---|---|
-| `sdlc` | 0.1.0 | SDLC AI-First interactif : `/sdlc:go` (triage), skills `challenge`, `spec`, `architect`, `plan`, `build`, `review`, `ship`, `retro`, `conventions` ; agents `planner`/`implementer`/`reviewer` ; `sdlc-gate` (TDD vérifié, verdict, livraison), validateurs, `sdlc-init-repo`. |
+| `sdlc` | 0.1.1 | SDLC AI-First interactif : `/sdlc:go` (triage), skills `challenge`, `spec`, `architect`, `plan`, `build`, `review`, `ship`, `retro`, `conventions` ; agents `planner`/`implementer`/`reviewer` ; `sdlc-gate` (TDD vérifié, verdict, livraison), validateurs, `sdlc-init-repo`. |
 | `fdm` | 1.0.0 | Conception de pièces imprimables en FDM (Bambu Lab, build123d) : `/fdm:design`, commandes `fdm-setup`, `fdm-profiles`, `fdm-run`, `fdm-slice`. Voir [plugins/fdm](plugins/fdm/README.md). |
 
 Plugin `sdlc` universel (aucun code propre à un langage ou à un projet) ; tout ce qui concerne un projet vit dans son dépôt (`docs/`, `.claude/check.json`).

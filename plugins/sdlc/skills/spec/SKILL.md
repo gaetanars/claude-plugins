@@ -28,6 +28,6 @@ Le résultat est `docs/features/<id>/spec.md` (schema_version 3), commité plus 
 ## Règles
 - Jamais `status: accepted` sans accord explicite dans la session.
 - Après `sdlc-gate start`, spec et brief sont figés (la vérification refuse toute modification) : un changement de besoin = nouvelle unité.
-- Un arbitrage qui vaudra pour la suite va aussi dans `docs/learnings.md` (`- AAAA-MM-JJ [<id>] constat → règle`).
+- Un arbitrage qui vaudra pour la suite reste dans « Décisions de cadrage » : `ship` le reporte dans `docs/learnings.md`. Ne modifie pas `docs/learnings.md` ici (`sdlc-gate start` refuse tout fichier modifié hors spec et brief).
 - Tout ce que `plan` ou `build` pourrait demander et qu'on peut trancher maintenant doit l'être maintenant.
 - Ne code pas.

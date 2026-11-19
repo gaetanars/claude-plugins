@@ -47,7 +47,7 @@ Exigée pour le parcours feature seulement. Une décision de la liste « Exige u
 Chemins protégés (contrôlés par `verify`) : `docs/architecture/`, `docs/adr/`, `.claude/`, `.github/`, spec et brief figés.
 
 ## Apprentissages
-`docs/learnings.md` : une ligne par apprentissage, `- AAAA-MM-JJ [<id>] constat → règle à appliquer`. Écrit par `ship` (faits du run et corrections de ta revue finale), `spec` et `architect` (arbitrages) ; lu par toutes les briques.
+`docs/learnings.md` : une ligne par apprentissage, `- AAAA-MM-JJ [<id>] constat → règle à appliquer`. Écrit par `ship` (faits du run, corrections de ta revue finale, arbitrages de cadrage de la spec valables pour la suite) et `architect` (arbitrages) ; lu par toutes les briques.
 Une règle devenue fausse est retirée, pas contredite. `/sdlc:retro` remonte les motifs récurrents vers le plugin.
 
 ## Verdict de revue
