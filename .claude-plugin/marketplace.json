@@ -18,6 +18,18 @@
         "tdd",
         "review"
       ]
+    },
+    {
+      "name": "fdm",
+      "source": "./plugins/fdm",
+      "description": "Préversion : conception de pièces imprimables en FDM pour imprimantes Bambu Lab (build123d) ; installation du venv et des profils.",
+      "category": "design",
+      "keywords": [
+        "3d-printing",
+        "fdm",
+        "bambu-lab",
+        "build123d"
+      ]
     }
   ]
 }

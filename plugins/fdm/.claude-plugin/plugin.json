@@ -1,0 +1,61 @@
+{
+  "name": "fdm",
+  "version": "0.1.0",
+  "description": "Préversion : conception de pièces imprimables en FDM pour imprimantes Bambu Lab, modélisées en build123d (installation de l'environnement CAO et des profils)",
+  "author": {
+    "name": "Gaëtan Ars"
+  },
+  "homepage": "https://github.com/gaetanars/claude-plugins/tree/main/plugins/fdm",
+  "repository": "https://github.com/gaetanars/claude-plugins",
+  "license": "MIT",
+  "keywords": [
+    "3d-printing",
+    "fdm",
+    "bambu-lab",
+    "build123d"
+  ],
+  "userConfig": {
+    "machine": {
+      "type": "string",
+      "title": "Profil machine",
+      "description": "Nom du profil machine Bambu Studio",
+      "default": "Bambu Lab A1 0.4 nozzle",
+      "sensitive": false
+    },
+    "process": {
+      "type": "string",
+      "title": "Profil de process",
+      "description": "Nom du profil de process Bambu Studio",
+      "default": "0.20mm Standard @BBL A1",
+      "sensitive": false
+    },
+    "filament": {
+      "type": "string",
+      "title": "Profil de filament",
+      "description": "Nom du profil de filament Bambu Studio",
+      "default": "Generic PLA @BBL A1",
+      "sensitive": false
+    },
+    "bambu_studio": {
+      "type": "string",
+      "title": "Exécutable Bambu Studio",
+      "description": "Chemin de l'exécutable Bambu Studio ; vide = chemin macOS standard, obligatoire sous Linux",
+      "default": "",
+      "sensitive": false
+    },
+    "bambu_profiles": {
+      "type": "string",
+      "title": "Dossier des profils Bambu Studio",
+      "description": "Dossier profiles/BBL de Bambu Studio ; vide = chemin macOS standard, obligatoire sous Linux",
+      "default": "",
+      "sensitive": false
+    },
+    "python": {
+      "type": "string",
+      "title": "Interpréteur Python",
+      "description": "Interpréteur Python 3.11 à 3.14 utilisé pour créer le venv",
+      "default": "python3",
+      "sensitive": false
+    }
+  }
+}

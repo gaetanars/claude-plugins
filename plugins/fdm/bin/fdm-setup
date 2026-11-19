@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Crée ou met à jour le venv <data>/venv (dépendances épinglées de requirements.txt)."""
+import argparse
+import hashlib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+from pathlib import Path
+
+MIN, MAX = (3, 11), (3, 15)  # >= 3.11, < 3.15
+REQUIREMENTS = Path(__file__).resolve().parent.parent / "requirements.txt"
+
+
+def python_version(interp):
+    try:
+        r = subprocess.run([interp, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                           capture_output=True, text=True)
+    except OSError as e:
+        sys.exit(f"erreur : interpréteur {interp} inutilisable ({e})")
+    try:
+        if r.returncode != 0:
+            raise ValueError
+        major, minor = r.stdout.strip().split(".")
+        return int(major), int(minor)
+    except ValueError:
+        sys.exit(f"erreur : version illisible pour l'interpréteur {interp}")
+
+
+def requirements_hash():
+    return hashlib.sha256(REQUIREMENTS.read_bytes()).hexdigest()
+
+
+def build_venv(interp, data, digest):
+    """Construit le venv dans un dossier temporaire ; renvoie son chemin ou lève RuntimeError."""
+    try:
+        tmp = Path(tempfile.mkdtemp(dir=data, prefix="venv.tmp-"))
+    except OSError as e:
+        raise RuntimeError(str(e))
+    try:
+        for cmd in ([interp, "-m", "venv", str(tmp)],
+                    [str(tmp / "bin/python"), "-m", "pip", "install", "-r", str(REQUIREMENTS)]):
+            if subprocess.run(cmd).returncode != 0:
+                raise RuntimeError(f"échec de la commande : {' '.join(cmd)}")
+        (tmp / "requirements.sha256").write_text(digest + "\n")
+    except (RuntimeError, OSError) as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError(str(e))
+    return tmp
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--data")
+    ap.add_argument("--python", default="python3")
+    ap.add_argument("--force", action="store_true")
+    args = ap.parse_args()
+
+    data = args.data or os.environ.get("CLAUDE_PLUGIN_DATA")
+    if not data:
+        sys.exit("erreur : dossier de données absent, passer --data ou définir CLAUDE_PLUGIN_DATA")
+    version = python_version(args.python)
+    if not MIN <= version < MAX:
+        sys.exit(f"erreur : Python {version[0]}.{version[1]} refusé, plage acceptée >= 3.11 et < 3.15")
+
+    data = Path(data)
+    venv = data / "venv"
+    digest = requirements_hash()
+    stamp = venv / "requirements.sha256"
+    if not args.force and stamp.is_file() and stamp.read_text().strip() == digest:
+        print(f"venv à jour : {venv}")
+        return
+    try:
+        data.mkdir(parents=True, exist_ok=True)
+        tmp = build_venv(args.python, data, digest)
+    except (RuntimeError, OSError) as e:
+        sys.exit(f"erreur : {e}")
+    old = None
+    if venv.exists():
+        old = data / f"venv.old-{uuid.uuid4().hex[:8]}"
+        venv.rename(old)
+    try:
+        tmp.rename(venv)
+    except OSError as e:
+        if old:
+            old.rename(venv)
+        shutil.rmtree(tmp, ignore_errors=True)
+        sys.exit(f"erreur : bascule du venv impossible ({e})")
+    if old:
+        shutil.rmtree(old, ignore_errors=True)
+    print(f"venv prêt : {venv}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Aplatit trois profils Bambu Studio (chaîne `inherits`) dans <data>/profiles/."""
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+MAC_PROFILES = "/Applications/BambuStudio.app/Contents/Resources/profiles/BBL"
+KINDS = ("machine", "process", "filament")
+
+
+class ProfileError(Exception):
+    pass
+
+
+def find_profile(kind_dir, name):
+    found = sorted(p for p in kind_dir.rglob("*.json") if p.name == f"{name}.json")
+    if not found:
+        raise ProfileError(f"profil « {name} » introuvable dans {kind_dir}")
+    if len(found) > 1:
+        raise ProfileError(f"profil « {name} » ambigu dans {kind_dir} :\n" + "\n".join(f"  {p}" for p in found))
+    return found[0]
+
+
+def resolve(kind_dir, name, chain=()):
+    if name in chain:
+        raise ProfileError("cycle d'héritage : " + " -> ".join([*chain, name]))
+    path = find_profile(kind_dir, name)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise ProfileError(f"{path} : JSON illisible ({e})")
+    if not isinstance(data, dict):
+        raise ProfileError(f"{path} : le JSON n'est pas un objet")
+    parent = data.pop("inherits", None)
+    merged = resolve(kind_dir, parent, (*chain, name)) if parent else {}
+    merged.update(data)
+    return merged
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--data")
+    ap.add_argument("--profiles-dir")
+    ap.add_argument("--machine", default="Bambu Lab A1 0.4 nozzle")
+    ap.add_argument("--process", default="0.20mm Standard @BBL A1")
+    ap.add_argument("--filament", default="Generic PLA @BBL A1")
+    args = ap.parse_args()
+
+    data = args.data or os.environ.get("CLAUDE_PLUGIN_DATA")
+    if not data:
+        sys.exit("erreur : dossier de données absent, passer --data ou définir CLAUDE_PLUGIN_DATA")
+    src = args.profiles_dir
+    if not src:
+        if sys.platform != "darwin":
+            sys.exit("erreur : dossier des profils Bambu Studio requis hors macOS, renseigner l'option bambu_profiles (--profiles-dir)")
+        src = MAC_PROFILES
+    src = Path(src)
+    if not src.is_dir():
+        sys.exit(f"erreur : dossier des profils introuvable : {src}")
+
+    names = {"machine": args.machine, "process": args.process, "filament": args.filament}
+    try:
+        profiles = {}
+        for kind in KINDS:
+            profiles[kind] = resolve(src / kind, names[kind])
+            profiles[kind].update({"name": names[kind], "from": "system"})
+    except ProfileError as e:
+        sys.exit(f"erreur : {e}")
+
+    out = Path(data) / "profiles"
+    tmps = {kind: out / f"{kind}.json.tmp" for kind in KINDS}
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        for kind in KINDS:
+            tmps[kind].write_text(json.dumps(profiles[kind], indent=2) + "\n")
+        for kind in KINDS:
+            os.replace(tmps[kind], out / f"{kind}.json")
+            print(f"{kind}: {names[kind]} ({len(profiles[kind])} keys)")
+    except OSError as e:
+        for tmp in tmps.values():
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        sys.exit(f"erreur : écriture dans {out} impossible : {e}")
+
+
+if __name__ == "__main__":
+    main()
