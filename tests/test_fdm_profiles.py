@@ -145,6 +145,34 @@ class Profiles(unittest.TestCase):
         self.assertEqual((self.out / "machine.json").read_text(), '{"old": true}')
         self.assertEqual([p.name for p in self.out.iterdir()], ["machine.json"])
 
+    def assert_clean_failure(self, r, path):
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn(str(path), r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_data_is_a_file(self):
+        self.make_tree()
+        self.data.write_text("x")
+        self.assert_clean_failure(self.go(), self.data)
+
+    def test_data_beneath_a_file(self):
+        self.make_tree()
+        blocker = self.t / "blocker"
+        blocker.write_text("x")
+        self.data = blocker / "y"
+        self.assert_clean_failure(self.go(), self.data)
+
+    def test_out_not_writable(self):
+        self.make_tree()
+        put(self.out / "machine.json", '{"old": true}')
+        self.out.chmod(0o500)
+        self.addCleanup(self.out.chmod, 0o700)
+        if os.access(self.out, os.W_OK):
+            self.skipTest("dossier inscriptible malgré chmod (root)")
+        self.assert_clean_failure(self.go(), self.out)
+        self.assertEqual((self.out / "machine.json").read_text(), '{"old": true}')
+        self.assertEqual([p.name for p in self.out.iterdir()], ["machine.json"])
+
     def test_non_macos_requires_profiles_dir(self):
         for extra in ([], ["--profiles-dir", ""]):
             r = run("--data", str(self.data), *extra, platform="linux")
